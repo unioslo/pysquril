@@ -19,14 +19,22 @@ class SelectElement(ABC):
 
 
 class BaseSelectElement(SelectElement):
+
     name = None
     regex = None
+
     def __init__(self, element: str) -> None:
         self.element = element
+        self.bare_key = self.create_bare_key(element)
+        self.sub_selections = self.create_sub_selections(element)
+        self.idx = self.create_idx(element)
+
     def create_bare_key(self, element: str) -> Optional[list]:
         return element.split('[')[0] if '[' in element else None
+
     def create_sub_selections(self, element: str) -> list:
         return element.split('|')[1].replace(']', '').split(',') if '|' in element else []
+
     def create_idx(self, element: str) -> Optional[str]:
         if '[' in element and '|' in element:
             return re.sub(r'.+\[(.*)\|(.*)\]', r'\1', element)
@@ -35,64 +43,35 @@ class BaseSelectElement(SelectElement):
         else:
             return None
 
+
 class Key(BaseSelectElement):
     name = 'key'
     regex = r'[^\[\]]+$'
-    def __init__(self, element: str) -> None:
-        self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
 
 
 class ArraySpecific(BaseSelectElement):
     name = 'array.specific'
     regex = r'.+\[[0-9]+\]$'
-    def __init__(self, element: str) -> None:
-        self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
 
 
 class ArraySpecificSingle(BaseSelectElement):
     name = 'array.specific.single'
     regex = r'.+\[[0-9]+\|[^,]+\]$'
-    def __init__(self, element: str) -> None:
-        self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
 
 
 class ArraySpecificMultiple(BaseSelectElement):
     name = 'array.specific.multiple'
     regex = r'.+\[[0-9]+\|.+,.+\]$'
-    def __init__(self, element: str) -> None:
-        self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
 
 
 class ArrayBroadcastSingle(BaseSelectElement):
     name = 'array.broadcast.single'
     regex = r'.+\[\*\|[^,]+\]$'
-    def __init__(self, element: str) -> None:
-        self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
 
 
 class ArrayBroadcastMultiple(BaseSelectElement):
     name = 'array.broadcast.multiple'
     regex = r'.+\[\*\|.+,.+\]$'
-    def __init__(self, element: str) -> None:
-        self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
 
 
 class SelectTerm(object):
