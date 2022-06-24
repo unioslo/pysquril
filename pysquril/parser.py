@@ -23,9 +23,8 @@ class BaseSelectElement(SelectElement):
     name = None
     regex = None
 
-    def __init__(self, element: str, func: Optional[str] = None) -> None:
+    def __init__(self, element: str) -> None:
         self.element = element
-        self.func = func
         self.bare_key = self.create_bare_key(self.element)
         self.sub_selections = self.create_sub_selections(self.element)
         self.idx = self.create_idx(self.element)
@@ -113,7 +112,7 @@ class SelectTerm(object):
                     if found:
                         msg = f'Could not uniquely identify {element} - already matched with {found}'
                         raise Exception(msg)
-                    element_instance = ElementClass(element, self.func)
+                    element_instance = ElementClass(element)
                     found = ElementClass.name
             if not element_instance:
                 raise Exception(f'Could not parse {element}')
