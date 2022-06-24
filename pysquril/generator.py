@@ -293,11 +293,24 @@ class SqliteQueryGenerator(SqlGenerator):
 
     # Helper functions - used by mappers
 
+    def _maybe_apply_function(self, term: SelectTerm, selection: str) -> str:
+        if not term.func:
+            return selection
+        elif term.func == 'count':
+            if term.original in ['*', '1']:
+                selection = '1'
+        else:
+            #if term.func in ['avg', 'sum', 'min', 'max']:
+             #   selection = f"({selection})::int"
+            if term.func.endswith('_ts'):
+                term.func = term.func.replace('_ts', '')
+        return f"{term.func}({selection})"
+
     def _gen_sql_key_selection(self, term: SelectTerm, parsed: Key) -> str:
-        return f"json_extract(data, '$.{term.original}')"
+        return self._maybe_apply_function(term, f"json_extract(data, '$.{term.original}')")
 
     def _gen_sql_array_selection(self, term: SelectTerm, parsed: ArraySpecific) -> str:
-        return f"json_extract(data, '$.{term.original}')"
+        return self._maybe_apply_function(term, f"json_extract(data, '$.{term.original}')")
 
     def _gen_sql_array_sub_selection(
         self,
@@ -338,7 +351,7 @@ class SqliteQueryGenerator(SqlGenerator):
                     )
                 else null end)
             """
-        return selection
+        return self._maybe_apply_function(term, selection)
 
     def _gen_sql_col(self, term: Union[SelectTerm, WhereTerm, OrderTerm]) -> str:
         if isinstance(term, WhereTerm) or isinstance(term, OrderTerm):
@@ -418,22 +431,37 @@ class PostgresQueryGenerator(SqlGenerator):
         """
     ]
 
+    def _maybe_apply_function(self, term: SelectTerm, selection: str) -> str:
+        if not term.func:
+            return selection
+        elif term.func == 'count':
+            if term.original in ['*', '1']:
+                selection = '1'
+        else:
+            if term.func in ['avg', 'sum', 'min', 'max']:
+                selection = f"({selection})::int"
+            if term.func.endswith('_ts'):
+                term.func = term.func.replace('_ts', '')
+        return f"{term.func}({selection})"
+
     def _gen_select_target(self, term_attr: str) -> str:
         return term_attr.replace('.', ',') if '.' in term_attr else term_attr
 
     def _gen_sql_key_selection(self, term: SelectTerm, parsed: Key) -> str:
         target = self._gen_select_target(term.original)
-        selection = f"data#>'{{{target}}}'"
-        return selection
+        selector = "data#>" if not term.func else "data#>>"
+        selection = f"{selector}'{{{target}}}'"
+        return self._maybe_apply_function(term, selection)
 
     def _gen_sql_array_selection(self, term: SelectTerm, parsed: ArraySpecific) -> str:
         target = self._gen_select_target(term.bare_term)
+        indexer = "->" if not term.func else "->>"
         selection = f"""
-            case when data#>'{{{target}}}'->{parsed.idx} is not null then
-                data#>'{{{target}}}'->{parsed.idx}
+            case when data#>'{{{target}}}'{indexer}{parsed.idx} is not null then
+                data#>'{{{target}}}'{indexer}{parsed.idx}
             else null end
             """
-        return selection
+        return self._maybe_apply_function(term, selection)
 
     def _gen_sql_array_sub_selection(
         self,
@@ -460,7 +488,7 @@ class PostgresQueryGenerator(SqlGenerator):
             then {data_selection_expr}
             else null end
             """
-        return selection
+        return self._maybe_apply_function(term, selection)
 
     def _gen_sql_col(self, term: Union[SelectTerm, WhereTerm, OrderTerm]) -> str:
         if isinstance(term, WhereTerm) or isinstance(term, OrderTerm):
