@@ -23,11 +23,12 @@ class BaseSelectElement(SelectElement):
     name = None
     regex = None
 
-    def __init__(self, element: str) -> None:
+    def __init__(self, element: str, func: Optional[str] = None) -> None:
         self.element = element
-        self.bare_key = self.create_bare_key(element)
-        self.sub_selections = self.create_sub_selections(element)
-        self.idx = self.create_idx(element)
+        self.func = func
+        self.bare_key = self.create_bare_key(self.element)
+        self.sub_selections = self.create_sub_selections(self.element)
+        self.idx = self.create_idx(self.element)
 
     def create_bare_key(self, element: str) -> Optional[list]:
         return element.split('[')[0] if '[' in element else None
@@ -76,10 +77,23 @@ class ArrayBroadcastMultiple(BaseSelectElement):
 
 class SelectTerm(object):
 
+    supported_functions = [
+        'count', 'avg', 'sum', 'min', 'max', 'min_ts', 'max_ts',
+    ]
+
     def __init__(self, original: str) -> None:
-        self.original = original
-        self.bare_term = original.split('[')[0]
+        self.func, self.original = self.strip_function(original)
+        self.bare_term = self.original.split('[')[0]
         self.parsed = self.parse_elements()
+
+    def strip_function(self, term: str) -> tuple:
+        func = None
+        for sf in self.supported_functions:
+            if term.startswith(f"{sf}("):
+                func = sf
+                term = term.replace(f"{sf}(", "")[:-1]
+                break
+        return func, term
 
     def parse_elements(self) -> list:
         out = []
@@ -99,7 +113,7 @@ class SelectTerm(object):
                     if found:
                         msg = f'Could not uniquely identify {element} - already matched with {found}'
                         raise Exception(msg)
-                    element_instance = ElementClass(element)
+                    element_instance = ElementClass(element, self.func)
                     found = ElementClass.name
             if not element_instance:
                 raise Exception(f'Could not parse {element}')
