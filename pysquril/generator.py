@@ -300,8 +300,6 @@ class SqliteQueryGenerator(SqlGenerator):
             if term.original in ['*', '1']:
                 selection = '1'
         else:
-            #if term.func in ['avg', 'sum', 'min', 'max']:
-             #   selection = f"({selection})::int"
             if term.func.endswith('_ts'):
                 term.func = term.func.replace('_ts', '')
         return f"{term.func}({selection})"
