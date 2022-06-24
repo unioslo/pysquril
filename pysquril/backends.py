@@ -141,7 +141,7 @@ class SqliteBackend(DatabaseBackend):
     def initialise(self) -> Optional[bool]:
         pass
 
-    def tables_list(self, exclude_endswith: list = [], remove_pattern: Optional[str] = None) -> list:
+    def tables_list(self, exclude_endswith: list = [], only_endswith: Optional[str] = None, remove_pattern: Optional[str] = None) -> list:
         query = "select name FROM sqlite_master where type = 'table'  order by name asc"
         with sqlite_session(self.engine) as session:
             res = session.execute(query).fetchall()
@@ -152,6 +152,9 @@ class SqliteBackend(DatabaseBackend):
             for row in res:
                 name = row[0]
                 exclude = False
+                if only_endswith:
+                    if not name.endswith(only_endswith):
+                        exclude = True
                 for ends_with in exclude_endswith:
                     if name.endswith(ends_with):
                         exclude = True
@@ -276,7 +279,7 @@ class PostgresBackend(object):
             pass # throws a tuple concurrently updated when restarting many processes
         return True
 
-    def tables_list(self, exclude_endswith: list = [], remove_pattern: Optional[str] = None) -> list:
+    def tables_list(self, exclude_endswith: list = [], only_endswith: Optional[str] = None, remove_pattern: Optional[str] = None) -> list:
         query = f"""select table_name from information_schema.tables
             where table_schema = '{self.schema}' order by table_name asc"""
         with postgres_session(self.pool) as session:
@@ -289,6 +292,9 @@ class PostgresBackend(object):
             for row in res:
                 name = row[0]
                 exclude = False
+                if only_endswith:
+                    if not name.endswith(only_endswith):
+                        exclude = True
                 for ends_with in exclude_endswith:
                     if name.endswith(ends_with):
                         exclude = True
