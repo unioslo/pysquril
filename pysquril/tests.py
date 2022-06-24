@@ -44,6 +44,7 @@ class TestBackends(object):
             'c': None,
             'd': 'string1',
             'timestamp': '2020-10-13T10:15:26.388573',
+            'timestamps': ['2010-10-13T10:15:26.388573', '2020-10-13T10:15:26.388573']
         },
         {
             'y': 11,
@@ -66,8 +67,10 @@ class TestBackends(object):
                     'h': 0
                 }
             ],
+            'b':[1111, 1],
             'd': 'string2',
             'timestamp': '2020-10-13T12:11:21.3885750',
+            'timestamps': ['1984-10-13T10:15:26.388573', '2020-10-13T10:15:26.388573']
         },
         {
             'a': {
@@ -81,6 +84,9 @@ class TestBackends(object):
             'x': 88,
             'd': 'string3',
             'timestamp': '2020-10-14T13:15:46.187575',
+            'q': {
+                'r': [{'s': 77}],
+            },
         },
         {
             'a': {
@@ -94,10 +100,16 @@ class TestBackends(object):
             'z': 10,
             'x': 107,
             'timestamp': '2020-10-14T16:15:26.388575',
+            'q': {
+                'r': [{'s': 0}],
+            },
         },
         {
             'x': 10,
             'timestamp': '2020-10-14T20:20:34.388511',
+            'q': {
+                'r': [{'s': 10}],
+            },
         }
     ]
 
@@ -199,7 +211,7 @@ class TestBackends(object):
         # simple array slice
         out = run_select_query('select=x,b[1]')
         assert out[0][1] == 2
-        assert out[1][1] is None
+        assert out[1][1] == 1
         # nested simple array slice
         out = run_select_query('select=x,a.k2[1]')
         assert out[2] == [88, 9]
@@ -237,6 +249,34 @@ class TestBackends(object):
         # multiple sub-keys
         out = run_select_query('select=a.k1,a.k3')
         assert out[3] == [{'r1': [33, 200], 'r2': 90}, [{'h': 0, 'r': 77, 's': 521}, {'h': 63, 's': 333}]]
+
+        # FUNCTIONS/AGGREGATIONS
+        # supported: count, avg, sum, (max, min), min_ts, max_ts
+        out = run_select_query('select=count(1)')
+        assert out == [[5]]
+        out = run_select_query('select=count(*)')
+        assert out == [[5]]
+        out = run_select_query('select=count(x)')
+        assert out == [[4]]
+        out = run_select_query('select=count(1),min(y)')
+        assert out == [[5, 1]]
+        out = run_select_query('select=count(1),avg(x),min(y),sum(x),max_ts(timestamp)')
+        assert out == [[5, 526.2500000000000000, 1, 2105, '2020-10-14T20:20:34.388511']]
+        # nested selections
+        out = run_select_query('select=count(a.k1.r2),count(x),count(*)')
+        assert out == [[2, 4, 5]]
+        # array selections
+        out = run_select_query('select=count(b[0])')
+        assert out == [[2]]
+        out = run_select_query('select=max(b[0])')
+        assert out == [[1111]]
+        out = run_select_query('select=min_ts(timestamps[0])')
+        assert out == [['1984-10-13T10:15:26.388573']]
+        # sub-selections
+        out = run_select_query('select=count(a.k3[0|h])')
+        assert out == [[1]]
+        out = run_select_query('select=max(q.r[0|s])')
+        assert out == [[77]]
 
         # WHERE
         if verbose:
