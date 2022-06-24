@@ -189,9 +189,11 @@ class TestBackends(object):
         db = DbBackendCls(engine)
         try:
             db.table_delete('test_table', '')
+            db.table_delete('another_table', '')
         except Exception as e:
             pass
         db.table_insert('test_table', data)
+        db.table_insert('another_table', data)
 
         # SELECT
         if verbose:
@@ -277,6 +279,10 @@ class TestBackends(object):
         assert out == [[1]]
         out = run_select_query('select=max(q.r[0|s])')
         assert out == [[77]]
+
+        # broadcasting aggregations
+        out = list(db.table_select('*', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
+        assert out == [{'another_table': [5]}, {'test_table': [5]}]
 
         # WHERE
         if verbose:
