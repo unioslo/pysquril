@@ -7,6 +7,7 @@ from typing import Callable, Union
 import psycopg2
 import psycopg2.extensions
 import psycopg2.pool
+import pytest
 
 from termcolor import colored
 
@@ -367,6 +368,10 @@ class TestBackends(object):
         assert out is True
         out = run_select_query('select=x&where=x=lt.1000')
         assert out == []
+        out = run_delete_query('')
+        with pytest.raises(Exception):
+            out = run_delete_query('')
+
 
 
     def test_sqlite(self):

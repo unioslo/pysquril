@@ -281,7 +281,11 @@ class SqlGenerator(object):
 
     def sql_delete(self) -> str:
         _where = self._gen_sql_where_clause()
-        return f'delete from {self.table_name} {_where}'
+        if not _where:
+            query = f"drop table {self.table_name}"
+        else:
+            query = f"delete from {self.table_name} {_where}"
+        return query
 
 
 class SqliteQueryGenerator(SqlGenerator):
