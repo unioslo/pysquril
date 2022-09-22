@@ -359,6 +359,10 @@ class TestBackends(object):
         out = run_select_query('select=x&where=x=eq.999')
         assert out[0][0] == 999
         assert len(out) == 3
+        out = run_update_query('set=a&where=a.k1.r2=eq.90', data={'a': {'k1': {'r1': [33, 200], 'r2': 80 }}})
+        out = run_select_query('where=a.k1.r2=eq.80')
+        assert len(out) == 1
+        assert out[0]['a']['k1']['r2'] == 80
 
         # DELETE
         if verbose:
