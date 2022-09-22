@@ -530,5 +530,5 @@ class PostgresQueryGenerator(SqlGenerator):
         key = term.parsed[0].select_term.bare_term
         assert self.data.get(key) is not None, f'Target key of update: {key} not found in payload'
         assert len(self.data.keys()) == 1, f'Cannot update more than one key per statement'
-        val = self.data[key]
+        val = json.dumps(self.data[key])
         return f"set data = jsonb_set(data, '{{{key}}}', '{val}')"
