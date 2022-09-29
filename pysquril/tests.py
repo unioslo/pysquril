@@ -193,6 +193,11 @@ class TestBackends(object):
             db.table_delete('another_table', '')
         except Exception as e:
             pass
+
+        # test '*' without any tables
+        out = list(db.table_select('*', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
+
+        # create tables
         db.table_insert('test_table', data)
         db.table_insert('another_table', data)
 
