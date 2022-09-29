@@ -373,6 +373,8 @@ class PostgresBackend(object):
     def table_select(self, table_name: str, uri_query: str, exclude_endswith: list = []) -> Iterable[tuple]:
         if table_name == "*":
             tables = self.tables_list(exclude_endswith = exclude_endswith)
+            if not tables:
+                return iter([])
             query = self._union_queries(uri_query, tables)
         else:
             sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
