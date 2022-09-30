@@ -196,6 +196,7 @@ class TestBackends(object):
 
         # test '*' without any tables
         out = list(db.table_select('*', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
+        assert list(out) == []
 
         # create tables
         db.table_insert('test_table', data)
