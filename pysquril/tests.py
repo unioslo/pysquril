@@ -190,6 +190,9 @@ class TestBackends(object):
         db = DbBackendCls(engine)
         try:
             db.table_delete('test_table', '')
+        except Exception as e:
+            pass
+        try:
             db.table_delete('another_table', '')
         except Exception as e:
             pass
