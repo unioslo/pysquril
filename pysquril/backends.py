@@ -219,6 +219,13 @@ class SqliteBackend(DatabaseBackend):
             except sqlite3.OperationalError as e:
                 logging.error(f'Syntax error?: {sql.delete_query}')
                 raise e
+        if not uri_query:
+            sql = self.generator_class(f'{self.schema}."{table_name}_audit"', uri_query)
+            try:
+                with sqlite_session(self.engine) as session:
+                    session.execute(sql.delete_query)
+            except sqlite3.OperationalError:
+                pass # alright if not exists
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
@@ -361,6 +368,13 @@ class PostgresBackend(object):
         sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
         with postgres_session(self.pool) as session:
             session.execute(sql.delete_query)
+        if not uri_query:
+            sql = self.generator_class(f'{self.schema}."{table_name}_audit"', uri_query)
+            try:
+                with postgres_session(self.pool) as session:
+                    session.execute(sql.delete_query)
+            except psycopg2.errors.UndefinedTable:
+                pass # alright if not exists
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
