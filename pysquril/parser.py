@@ -175,7 +175,12 @@ class WhereTerm(object):
                 op = '.'.join([_parts[0], _parts[1]])
             val = op_and_val.split('.')[2]
         else:
-            op, val = op_and_val.split('.')
+            try:
+                op, val = op_and_val.split('.')
+            except ValueError: # might be a float
+                parts = op_and_val.split('.')
+                op = parts[0]
+                val = float(f"{parts[1]}.{parts[2]}")
         return [WhereElement(groups, combinator, term, op, val)]
 
 
