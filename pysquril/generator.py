@@ -526,8 +526,13 @@ class PostgresQueryGenerator(SqlGenerator):
             try:
                 integer_ops = ['gt', 'gte', 'lt', 'lte']
                 int(term.parsed[0].val)
-                if term.parsed[0].op in integer_ops:
+                if (
+                    term.parsed[0].op in integer_ops
+                    and str(float(term.parsed[0].val)) != str(term.parsed[0].val)
+                ):
                     col = f'({col})::int'
+                elif str(float(term.parsed[0].val)) == str(term.parsed[0].val):
+                    col = f'({col})::real'
             except ValueError:
                 pass
         return col
