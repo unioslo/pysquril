@@ -273,6 +273,13 @@ class TestBackends(object):
         assert out[0][0] == 11
         out = run_select_query('select=y&where=lol4.yeah=neq.123,and:lol1=not.is.null')
         assert out[0][0] == 11
+        # floats
+        out = run_select_query('select=z&where=float=eq.3.1')
+        assert out[0][0] == 5
+        out = run_select_query('select=z&where=float_str=eq.3.2')
+        assert out[0][0] == 5
+        out = run_select_query('select=z&where=float=gt.3.2')
+        assert out[0][0] == 1
 
         # ORDER
         if verbose:

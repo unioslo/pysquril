@@ -13,6 +13,8 @@ dataset = [
         'lol2': '123',
         'lol3': {'yeah': 123},
         'lol4': {'yeah': '123'},
+        'float': 3.1,
+        'float_str': '3.2',
     },
     {
         'y': 11,
@@ -43,6 +45,7 @@ dataset = [
         'lol2': '456',
         'lol3': {'yeah': 456},
         'lol4': {'yeah': '456'},
+        'float': 4.1,
     },
     {
         'a': {
