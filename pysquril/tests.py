@@ -255,6 +255,24 @@ class TestBackends(object):
         assert len(out) == 3
         out = run_select_query('select=x,timestamp&where=timestamp=lt.2020-10-14')
         assert len(out) == 2
+        # equality with strings made of digits, and with integers
+        out = run_select_query('select=x&where=lol1=eq.123')
+        assert out[0][0] == 1900
+        out = run_select_query('select=x&where=lol2=eq.123')
+        assert out[0][0] == 1900
+        out = run_select_query('select=x&where=lol3.yeah=eq.123')
+        assert out[0][0] == 1900
+        out = run_select_query('select=x&where=lol4.yeah=eq.123')
+        assert out[0][0] == 1900
+        # same as ^, but with non-equality, neq
+        out = run_select_query('select=y&where=lol1=neq.123,and:lol1=not.is.null')
+        assert out[0][0] == 11
+        out = run_select_query('select=y&where=lol2=neq.123,and:lol1=not.is.null')
+        assert out[0][0] == 11
+        out = run_select_query('select=y&where=lol3.yeah=neq.123,and:lol1=not.is.null')
+        assert out[0][0] == 11
+        out = run_select_query('select=y&where=lol4.yeah=neq.123,and:lol1=not.is.null')
+        assert out[0][0] == 11
 
         # ORDER
         if verbose:
