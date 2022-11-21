@@ -186,7 +186,7 @@ class SqlGenerator(object):
         val = term.parsed[0].val
         try:
             int(val)
-            val = f'{val}'
+            val = f"'{val}'" if op in ['eq', 'neq'] else val
         except ValueError:
             if val == 'null' or op == 'in':
                 val = f'{val}'
@@ -376,6 +376,8 @@ class SqliteQueryGenerator(SqlGenerator):
                 raise Exception(f'Invalid term {term.original}')
             target = select_term.parsed[0].element
         col = f"json_extract(data, '$.{target}')"
+        if isinstance(term, WhereTerm) and term.parsed[0].op in ['eq', 'neq']:
+            col = f"cast ({col} as text)"
         return col
 
     def _gen_sql_update(self, term: Key) -> str:
@@ -522,7 +524,7 @@ class PostgresQueryGenerator(SqlGenerator):
             col = f"data{final_select_op}'{{{target}}}'"
         if isinstance(term, WhereTerm):
             try:
-                integer_ops = ['eq', 'gt', 'gte', 'lt', 'lte', 'neq']
+                integer_ops = ['gt', 'gte', 'lt', 'lte']
                 int(term.parsed[0].val)
                 if term.parsed[0].op in integer_ops:
                     col = f'({col})::int'
