@@ -167,7 +167,7 @@ class WhereTerm(object):
                 combinator = c.replace(':', '')
                 element = element.replace(c, '')
         term, op_and_val = element.split('=')
-        if 'not' in op_and_val:
+        if 'not.' in op_and_val:
             _parts = op_and_val.split('.')
             if 'is' in _parts:
                 op = '.'.join([_parts[1], _parts[0]])
