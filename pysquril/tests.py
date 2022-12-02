@@ -238,6 +238,10 @@ class TestBackends(object):
         assert len(out) == 4
         out = run_select_query('select=d&where=d=not.like.*g3')
         assert len(out) == 2
+        # Run the query with not as a string value.
+        out=run_select_query('select=d&where=d=eq.not')
+        assert len(out) == 0
+        run_select_query('select=d&where=d=not.like.*g3')
         # in
         out = run_select_query('select=d&where=d=in.[string1,string2]')
         assert len(out) == 2

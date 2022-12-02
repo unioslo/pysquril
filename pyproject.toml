@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pysquril"
-version = "0.2.0"
+version = "0.2.1"
 description = ""
 authors = ["Leon du Toit <l.c.d.toit@usit.uio.no>"]
 
