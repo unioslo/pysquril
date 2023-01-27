@@ -3,6 +3,7 @@ import json
 
 from typing import Union, Callable, Optional
 
+from pysquril.exc import ParseError
 from pysquril.parser import (
     Key,
     ArraySpecific,
@@ -222,8 +223,6 @@ class SqlGenerator(object):
         return f'limit {term.parsed[0].end} offset {term.parsed[0].start}'
 
     def _term_to_sql_update(self, term: SelectTerm) -> str:
-        if not self.data:
-            return None
         out = self._gen_sql_update(term)
         return out
 
@@ -382,7 +381,8 @@ class SqliteQueryGenerator(SqlGenerator):
 
     def _gen_sql_update(self, term: Key) -> str:
         key = term.parsed[0].select_term.bare_term
-        assert self.data.get(key) is not None, f'Target key of update: {key} not found in payload'
+        if self.data.get(key) is None:
+            raise ParseError(f'Target key of update: {key} not found in payload')
         assert len(self.data.keys()) == 1, f'Cannot update more than one key per statement'
         new = json.dumps(self.data)
         return f"set data = json_patch(data, '{new}')"
@@ -539,7 +539,8 @@ class PostgresQueryGenerator(SqlGenerator):
 
     def _gen_sql_update(self, term: Key) -> str:
         key = term.parsed[0].select_term.bare_term
-        assert self.data.get(key) is not None, f'Target key of update: {key} not found in payload'
+        if self.data.get(key) is None:
+            raise ParseError(f'Target key of update: {key} not found in payload')
         assert len(self.data.keys()) == 1, f'Cannot update more than one key per statement'
         val = json.dumps(self.data[key])
         return f"set data = jsonb_set(data, '{{{key}}}', '{val}')"

@@ -12,6 +12,7 @@ import pytest
 from termcolor import colored
 
 from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
+from pysquril.exc import ParseError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 from pysquril.test_data import dataset
 
@@ -84,7 +85,7 @@ class TestBackends(object):
         ) -> list:
             q = SqlGeneratorCls(table, uri_query, data=data)
             if verbose:
-                print(q.update_query)
+                print(colored(q.update_query, 'cyan'))
             with session_func(engine) as session:
                 session.execute(q.update_query)
             with session_func(engine) as session:
@@ -322,10 +323,15 @@ class TestBackends(object):
         out = run_select_query('select=x&where=x=eq.999')
         assert out[0][0] == 999
         assert len(out) == 3
-        out = run_update_query('set=a&where=a.k1.r2=eq.90', data={'a': {'k1': {'r1': [33, 200], 'r2': 80 }}})
+        out = run_update_query(
+            'set=a&where=a.k1.r2=eq.90',
+            data={'a': {'k1': {'r1': [33, 200], 'r2': 80 }}},
+        )
         out = run_select_query('where=a.k1.r2=eq.80')
         assert len(out) == 1
         assert out[0]['a']['k1']['r2'] == 80
+        with pytest.raises(ParseError):
+            out = run_update_query('set=x&where=x=eq.1', data={})
 
         # DELETE
         if verbose:
