@@ -284,7 +284,7 @@ class SelectClause(Clause):
     term_class = SelectTerm
 
 class WhereClause(Clause):
-    term_class=WhereTerm
+    term_class = WhereTerm
 
 class OrderClause(Clause):
     term_class = OrderTerm
