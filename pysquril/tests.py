@@ -332,6 +332,15 @@ class TestBackends(object):
         assert out[0]['a']['k1']['r2'] == 80
         with pytest.raises(ParseError):
             out = run_update_query('set=x&where=x=eq.1', data={})
+        # multiple keys
+        out = run_update_query(
+            'set=x,y&where=float=eq.3.1',
+            data={'x': 0, 'y': 1},
+        )
+        out = run_select_query('select=x,y&where=float=eq.3.1')
+        assert len(out) == 1
+        assert out[0][0] == 0
+        assert out[0][1] == 1
 
         # DELETE
         if verbose:

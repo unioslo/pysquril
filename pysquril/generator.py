@@ -15,6 +15,7 @@ from pysquril.parser import (
     WhereTerm,
     OrderTerm,
     RangeTerm,
+    SetTerm,
     Clause,
     UriQuery,
 )
@@ -111,9 +112,9 @@ class SqlGenerator(object):
         """
         raise NotImplementedError
 
-    def _gen_sql_update(self, term: Key) -> str:
+    def _gen_sql_update(self, term: Key) -> list:
         """
-        Generate an update expression, from a term
+        Generate a list of update expressions, from a term
         using the data passed to the constructor.
 
         """
@@ -222,9 +223,8 @@ class SqlGenerator(object):
     def _term_to_sql_range(self, term: RangeTerm) -> str:
         return f'limit {term.parsed[0].end} offset {term.parsed[0].start}'
 
-    def _term_to_sql_update(self, term: SelectTerm) -> str:
-        out = self._gen_sql_update(term)
-        return out
+    def _term_to_sql_update(self, term: SelectTerm) -> list:
+        return self._gen_sql_update(term)
 
     # mapper methods - used by public methods
 
@@ -270,13 +270,48 @@ class SqlGenerator(object):
         return f'{_select} {_where} {_order} {_range}'
 
     def sql_update(self) -> str:
+        """
+        Implementation notes:
+
+        When calling set_map with the _gen_sql_update function
+        is called on all set terms, resulting in a list of
+        potentential update clauses.
+
+        Sqlite offers json_patch which allows updating
+        multiple keys in a JSON structure in one SQL
+        statement, negating the need for multiple update
+        clauses. The result of set_map is a list of duplicate
+        clauses in the case where more than one set term is
+        provided.
+
+        Postgres, however, offers jsonb_set, which can
+        only be called for one key within a JSON structure
+        per SQL statement. The result of set_map is a list
+        of unique update clauses.
+
+        Generating valid update statements requires resolving
+        the differences in the functionality offered by sqlite
+        and postgres.
+
+        The solution is to turn the output of the set_map function
+        into a set, removing duplicate entries. This way the sqlite
+        variant always returns only one update clause, while the
+        postgres variant may return more.
+
+        For postgres the return value from this function is one
+        or more update statements, depending on how many JSON keys
+        are being changed. For sqlite it is always only one statement.
+
+        """
         out = self.set_map(self._term_to_sql_update)
         if not out:
             return ''
         else:
-            _set = out[0]
             _where = self._gen_sql_where_clause()
-            return f'update {self.table_name} {_set} {_where}'
+            _query = ""
+            for expr in set(out):
+                _query += f"update {self.table_name} {expr} {_where}; "
+            return _query
 
     def sql_delete(self) -> str:
         _where = self._gen_sql_where_clause()
@@ -379,11 +414,10 @@ class SqliteQueryGenerator(SqlGenerator):
             col = f"cast ({col} as text)"
         return col
 
-    def _gen_sql_update(self, term: Key) -> str:
+    def _gen_sql_update(self, term: SetTerm) -> str:
         key = term.parsed[0].select_term.bare_term
         if self.data.get(key) is None:
             raise ParseError(f'Target key of update: {key} not found in payload')
-        assert len(self.data.keys()) == 1, f'Cannot update more than one key per statement'
         new = json.dumps(self.data)
         return f"set data = json_patch(data, '{new}')"
 
@@ -537,10 +571,9 @@ class PostgresQueryGenerator(SqlGenerator):
                 pass
         return col
 
-    def _gen_sql_update(self, term: Key) -> str:
-        key = term.parsed[0].select_term.bare_term
-        if self.data.get(key) is None:
-            raise ParseError(f'Target key of update: {key} not found in payload')
-        assert len(self.data.keys()) == 1, f'Cannot update more than one key per statement'
-        val = json.dumps(self.data[key])
-        return f"set data = jsonb_set(data, '{{{key}}}', '{val}')"
+    def _gen_sql_update(self, term: SetTerm) -> str:
+        target = term.parsed[0].select_term.bare_term
+        if self.data.get(target) is None:
+            raise ParseError(f'Target key of update: {target} not found in payload')
+        val = json.dumps(self.data[target])
+        return f" set data = jsonb_set(data, '{{{target}}}', '{val}')"
