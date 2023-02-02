@@ -136,6 +136,7 @@ class SqliteBackend(DatabaseBackend):
         self.engine = engine
         self.verbose = verbose
         self.table_definition = '(data json unique not null)'
+        self.schema = schema if schema else 'public'
         self.requestor = requestor
 
     def initialise(self) -> Optional[bool]:
