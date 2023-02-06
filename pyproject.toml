@@ -1,11 +1,11 @@
 [tool.poetry]
 name = "pysquril"
 version = "0.2.1"
-description = ""
+description = "Python implementation of structured URI query language"
 authors = ["Leon du Toit <l.c.d.toit@usit.uio.no>"]
 
 [tool.poetry.dependencies]
-python = "^3.6"
+python = "^3.7"
 psycopg2-binary = "^2.9.3"
 
 [tool.poetry.dev-dependencies]
