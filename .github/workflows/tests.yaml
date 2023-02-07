@@ -4,6 +4,11 @@ on: [push, pull_request]
 
 env:
   POETRY_VERSION: 1.3.2
+  PYSQURIL_POSTGRES_DB: pysquril_db
+  PYSQURIL_POSTGRES_USER: pysquril_user
+  PYSQURIL_POSTGRES_PASSWORD: pysquril_password
+  PYSQURIL_POSTGRES_HOST: localhost
+
 
 jobs:
   tests:
@@ -11,6 +16,21 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
+
+    services:
+      postgres:
+        image: docker.io/postgres:14
+        env:
+          POSTGRES_DB: ${{env.PYSQURIL_POSTGRES_DB}}
+          POSTGRES_USER: ${{env.PYSQURIL_POSTGRES_USER}}
+          POSTGRES_PASSWORD: ${{env.PYSQURIL_POSTGRES_PASSWORD}}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 127.0.0.1:5432:5432
 
     steps:
       - name: Checkout the repo
