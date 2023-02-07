@@ -1,5 +1,6 @@
 
 import json
+import os
 import sqlite3
 
 from typing import Callable, Union
@@ -370,10 +371,10 @@ class TestBackends(object):
         try:
             pool = postgres_init(
                 {
-                    "dbname": "pysquril_db",
-                    "user": "pysquril_user",
-                    "pw": "",
-                    "host": "localhost",
+                    "dbname": os.environ.get("PYSQURIL_POSTGRES_DB", "pysquril_db"),
+                    "user": os.environ.get("PYSQURIL_POSTGRES_USER", "pysquril_user"),
+                    "pw": os.environ.get("PYSQURIL_POSTGRES_PASSWORD", ""),
+                    "host": os.environ.get("PYSQURIL_POSTGRES_HOST", "localhost"),
                 }
             )
             pg_backend = PostgresBackend(pool)
