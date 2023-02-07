@@ -35,13 +35,17 @@ jobs:
     steps:
       - name: Checkout the repo
         uses: actions/checkout@v3
+      - name: Install Poetry
+        run: pipx install poetry==${{env.POETRY_VERSION}}
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "poetry"
+          cache-dependency-path: "pyproject.toml"
       - name: Install package dependencies
         run: |
-          pip install poetry==${{env.POETRY_VERSION}}
+          poetry env use ${{ matrix.python-version }}
           poetry install
       - name: Test with pytest
         run: poetry run pytest pysquril/tests.py
