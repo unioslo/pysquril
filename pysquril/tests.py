@@ -391,3 +391,4 @@ class TestBackends(object):
             print("missing postgres db, run:")
             print("$ createuser pysquril_user")
             print("$ createdb -O pysquril_user pysquril_db")
+            raise
