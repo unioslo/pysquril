@@ -87,7 +87,7 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
-    def table_select(self, table_name: str, uri: str) -> Iterable[tuple]:
+    def table_select(self, table_name: str, uri: str, data: Optional[Union[dict, list]] = None) -> Iterable[tuple]:
         pass
 
 
@@ -197,7 +197,7 @@ class SqliteBackend(DatabaseBackend):
             raise e
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
-        old = list(self.table_select(table_name, uri_query))
+        old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
         with sqlite_session(self.engine) as session:
             session.execute(sql.update_query)
@@ -236,14 +236,14 @@ class SqliteBackend(DatabaseBackend):
             queries.append(f"select json_object({self.schema}.'{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
-    def table_select(self, table_name: str, uri_query: str, exclude_endswith: list = []) -> Iterable[tuple]:
+    def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None, exclude_endswith: list = []) -> Iterable[tuple]:
         if table_name == "*":
             tables = self.tables_list(exclude_endswith = exclude_endswith)
             if not tables:
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
+            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
             query = sql.select_query
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
@@ -352,7 +352,7 @@ class PostgresBackend(object):
             raise e
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
-        old = list(self.table_select(table_name, uri_query))
+        old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
         with postgres_session(self.pool) as session:
             session.execute(sql.update_query)
@@ -387,14 +387,14 @@ class PostgresBackend(object):
             queries.append(f"select jsonb_build_object('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
-    def table_select(self, table_name: str, uri_query: str, exclude_endswith: list = []) -> Iterable[tuple]:
+    def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None, exclude_endswith: list = []) -> Iterable[tuple]:
         if table_name == "*":
             tables = self.tables_list(exclude_endswith = exclude_endswith)
             if not tables:
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
+            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
             query = sql.select_query
         with postgres_session(self.pool) as session:
             session.execute(query)
