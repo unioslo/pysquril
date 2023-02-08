@@ -167,7 +167,7 @@ class SqliteBackend(DatabaseBackend):
     def table_insert(self, table_name: str, data: Union[dict, list]) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into "{table_name}" (data) values (?)'
+            insert_stmt = f'insert into {self.schema}."{table_name}" (data) values (?)'
             target = []
             if dtype is list:
                 for element in data:
@@ -180,7 +180,7 @@ class SqliteBackend(DatabaseBackend):
                 return True
             except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
                 with sqlite_session(self.engine) as session:
-                    session.execute(f'create table if not exists "{table_name}" {self.table_definition}')
+                    session.execute(f'create table if not exists {self.schema}."{table_name}" {self.table_definition}')
                     session.executemany(insert_stmt, target)
                 return True
         except sqlite3.IntegrityError as e:
@@ -198,7 +198,7 @@ class SqliteBackend(DatabaseBackend):
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
         old = list(self.table_select(table_name, uri_query))
-        sql = self.generator_class(f'"{table_name}"', uri_query, data=data)
+        sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
         with sqlite_session(self.engine) as session:
             session.execute(sql.update_query)
         audit_data = []
@@ -209,11 +209,11 @@ class SqliteBackend(DatabaseBackend):
                 'previous': val,
                 'identity': self.requestor
             })
-        self.table_insert(f'{table_name}_audit', audit_data)
+        self.table_insert(f'{self.schema}.{table_name}_audit', audit_data)
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        sql = self.generator_class(f'"{table_name}"', uri_query)
+        sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
         with sqlite_session(self.engine) as session:
             try:
                 session.execute(sql.delete_query)
@@ -232,8 +232,8 @@ class SqliteBackend(DatabaseBackend):
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'"{table_name}"', uri_query)
-            queries.append(f"select json_object('{table_name}', ({sql.select_query}))")
+            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
+            queries.append(f"select json_object({self.schema}.'{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
     def table_select(self, table_name: str, uri_query: str, exclude_endswith: list = []) -> Iterable[tuple]:
@@ -241,7 +241,7 @@ class SqliteBackend(DatabaseBackend):
             tables = self.tables_list(exclude_endswith = exclude_endswith)
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'"{table_name}"', uri_query)
+            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
             query = sql.select_query
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
