@@ -201,7 +201,7 @@ class SqliteBackend(DatabaseBackend):
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
         old = list(self.table_select(table_name, uri_query, data=data))
-        sql = self.generator_class(f"{self.schema}{self.sep}{table_name}", uri_query, data=data)
+        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
         with sqlite_session(self.engine) as session:
             session.execute(sql.update_query)
         audit_data = []
@@ -216,7 +216,7 @@ class SqliteBackend(DatabaseBackend):
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        sql = self.generator_class(f"{self.schema}{self.sep}{table_name}", uri_query)
+        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
         with sqlite_session(self.engine) as session:
             try:
                 session.execute(sql.delete_query)
@@ -224,7 +224,7 @@ class SqliteBackend(DatabaseBackend):
                 logging.error(f'Syntax error?: {sql.delete_query}')
                 raise e
         if not uri_query:
-            sql = self.generator_class(f'{self.schema}{self.sep}{table_name}_audit', uri_query)
+            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}_audit"', uri_query)
             try:
                 with sqlite_session(self.engine) as session:
                     session.execute(sql.delete_query)
@@ -235,7 +235,7 @@ class SqliteBackend(DatabaseBackend):
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'{self.schema}{self.sep}{table_name}', uri_query)
+            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
             queries.append(f"select json_object('{self.schema}{self.sep}{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
@@ -246,7 +246,7 @@ class SqliteBackend(DatabaseBackend):
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'{self.schema}{self.sep}{table_name}', uri_query, data=data)
+            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
             query = sql.select_query
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
