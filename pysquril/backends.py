@@ -125,7 +125,6 @@ class SqliteBackend(DatabaseBackend):
     """
 
     generator_class = SqliteQueryGenerator
-    sep = "_"
 
     def __init__(
         self,
@@ -137,7 +136,8 @@ class SqliteBackend(DatabaseBackend):
         self.engine = engine
         self.verbose = verbose
         self.table_definition = '(data json unique not null)'
-        self.schema = schema if schema else 'public'
+        self.schema = schema if schema else ""
+        self.sep = "_" if self.schema else ""
         self.requestor = requestor
 
     def initialise(self) -> Optional[bool]:
