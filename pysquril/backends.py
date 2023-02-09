@@ -52,6 +52,8 @@ def postgres_session(
 
 class DatabaseBackend(ABC):
 
+    sep: str # schema separator character
+
     def __init__(
         self,
         engine: Union[
@@ -267,6 +269,7 @@ class PostgresBackend(object):
     """
 
     generator_class = PostgresQueryGenerator
+    sep = "."
 
     def __init__(
         self,
@@ -317,7 +320,7 @@ class PostgresBackend(object):
     def table_insert(self, table_name: str, data: Union[dict, list]) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into {self.schema}."{table_name}" (data) values (%s)'
+            insert_stmt = f'insert into {self.schema}{self.sep}"{table_name}" (data) values (%s)'
             target = []
             if dtype is list:
                 for element in data:
@@ -329,9 +332,9 @@ class PostgresBackend(object):
                     session.executemany(insert_stmt, target)
                 return True
             except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
-                table_create = f'create table if not exists {self.schema}."{table_name}"{self.table_definition}'
+                table_create = f'create table if not exists {self.schema}{self.sep}"{table_name}"{self.table_definition}'
                 trigger_create = f"""
-                    create trigger ensure_unique_data before insert on {self.schema}."{table_name}"
+                    create trigger ensure_unique_data before insert on {self.schema}{self.sep}"{table_name}"
                     for each row execute procedure unique_data()"""
                 with postgres_session(self.pool) as session:
                     session.execute(f'create schema if not exists {self.schema}')
@@ -354,7 +357,7 @@ class PostgresBackend(object):
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
         old = list(self.table_select(table_name, uri_query, data=data))
-        sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
+        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
         with postgres_session(self.pool) as session:
             session.execute(sql.update_query)
         audit_data = []
@@ -369,11 +372,11 @@ class PostgresBackend(object):
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
+        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
         with postgres_session(self.pool) as session:
             session.execute(sql.delete_query)
         if not uri_query:
-            sql = self.generator_class(f'{self.schema}."{table_name}_audit"', uri_query)
+            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}_audit"', uri_query)
             try:
                 with postgres_session(self.pool) as session:
                     session.execute(sql.delete_query)
@@ -384,7 +387,7 @@ class PostgresBackend(object):
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query)
+            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
             queries.append(f"select jsonb_build_object('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
@@ -395,7 +398,7 @@ class PostgresBackend(object):
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'{self.schema}."{table_name}"', uri_query, data=data)
+            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
             query = sql.select_query
         with postgres_session(self.pool) as session:
             session.execute(query)
