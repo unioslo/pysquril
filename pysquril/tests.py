@@ -2,10 +2,13 @@
 import json
 import os
 import sqlite3
+import unittest
+import tempfile
 
 from typing import Callable, Union
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extensions
 import psycopg2.pool
 import pytest
@@ -392,3 +395,80 @@ class TestBackends(object):
             print("$ createuser pysquril_user")
             print("$ createdb -O pysquril_user pysquril_db")
             raise
+
+class TestSqlBackend(unittest.TestCase):
+    __test__ = False
+    
+    backend: Union[SqliteBackend, PostgresBackend]
+    engine: Union[sqlite3.Connection, psycopg2.pool.SimpleConnectionPool]
+
+    def test_audit(self) -> bool:
+        test_table = "just_an_average_audit_test_table"
+
+        key_to_update = "key1"
+        original_value = 5
+
+        data = {key_to_update: original_value, "key2": "a"}
+        self.backend.table_insert(table_name=test_table, data=data)
+        update_data = {key_to_update: original_value+1}
+
+        # update the table with the new data
+        self.backend.table_update(table_name=test_table, uri_query=f"set={key_to_update}&where={key_to_update}=eq.{original_value}", data=update_data)
+        result = list(self.backend.table_select(table_name=test_table, uri_query=""))
+        self.assertTrue(result)
+        retrieved_data = result[-1]
+        self.assertEqual(retrieved_data, {**data, **update_data})
+        self.assertNotEqual(retrieved_data[key_to_update], original_value)
+        self.assertEqual(retrieved_data[key_to_update], update_data[key_to_update])
+
+        # view update audit data
+        result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
+        self.assertTrue(result)
+        audit_event = result[-1]
+        self.assertEqual(audit_event["previous"], data)
+        self.assertEqual(audit_event["diff"], update_data)
+
+        # delete the table
+        self.backend.table_delete(table_name=test_table, uri_query="")
+
+        # try to retrieve deleted table
+        select = self.backend.table_select(table_name=test_table, uri_query="")
+        with self.assertRaises((sqlite3.OperationalError, psycopg2.errors.UndefinedTable)):
+            next(select)
+        
+        # try to retrieve deleted table's audit table
+        select = self.backend.table_select(table_name=f"{test_table}_audit", uri_query="")
+        with self.assertRaises((sqlite3.OperationalError, psycopg2.errors.UndefinedTable)):
+            next(select)
+
+class TestSqliteBackend(TestSqlBackend):
+    __test__ = True
+
+    def setUp(self) -> None:
+        self.directory = tempfile.gettempdir()
+        self.file = f"{__package__}_test.db"
+        self.engine = sqlite_init(self.directory, name=self.file)
+        self.backend = SqliteBackend(self.engine)
+    
+    def tearDown(self) -> None:
+        self.engine.close()
+        if os.path.exists(f"{self.directory}/{self.file}"):
+            os.remove(f"{self.directory}/{self.file}")
+
+class TestPostgresBackend(TestSqlBackend):
+    __test__ = True
+
+    def setUp(self) -> None:
+        self.engine = postgres_init(
+            {
+                "dbname": os.environ.get("PYSQURIL_POSTGRES_DB", "pysquril_db"),
+                "user": os.environ.get("PYSQURIL_POSTGRES_USER", "pysquril_user"),
+                "pw": os.environ.get("PYSQURIL_POSTGRES_PASSWORD", ""),
+                "host": os.environ.get("PYSQURIL_POSTGRES_HOST", "localhost"),
+            }
+        )
+        self.backend = PostgresBackend(self.engine)
+        self.backend.initialise()
+
+    def tearDown(self) -> None:
+        self.engine.closeall()
