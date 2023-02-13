@@ -8,6 +8,6 @@ setup(
     description='Structured query URI language',
     author='Leon du Toit',
     author_email='l.c.d.toit@usit.uio.no',
-    url='',
+    url='https://github.com/unioslo/pysquril',
     packages=['pysquril'],
 )

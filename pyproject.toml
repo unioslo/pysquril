@@ -2,6 +2,7 @@
 name = "pysquril"
 version = "0.2.1"
 description = "Python implementation of structured URI query language"
+repository = "https://github.com/unioslo/pysquril"
 authors = ["Leon du Toit <l.c.d.toit@usit.uio.no>"]
 
 [tool.poetry.dependencies]
