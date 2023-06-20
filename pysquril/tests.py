@@ -66,16 +66,8 @@ class TestBackends(object):
             q = SqlGeneratorCls(table, uri_query)
             if verbose:
                 print(colored(q.select_query, 'yellow'))
-            with session_func(engine) as session:
-                session.execute(q.select_query)
-                resp = session.fetchall()
-            for row in resp:
-                target = row[0]
-                if isinstance(target, dict) or isinstance(target, list):
-                    _in = target
-                else:
-                    _in = json.loads(target)
-                out.append(_in)
+            db = DbBackendCls(engine)
+            out = list(db.table_select(table, uri_query))
             if verbose:
                 print(out)
             return out
@@ -90,18 +82,9 @@ class TestBackends(object):
             q = SqlGeneratorCls(table, uri_query, data=data)
             if verbose:
                 print(colored(q.update_query, 'cyan'))
-            with session_func(engine) as session:
-                session.execute(q.update_query)
-            with session_func(engine) as session:
-                session.execute(f'select * from {table}')
-                resp = session.fetchall()
-            for row in resp:
-                target = row[0]
-                if isinstance(target, dict):
-                    _in = target
-                else:
-                    _in = json.loads(target)
-                out.append(_in)
+            db = DbBackendCls(engine)
+            db.table_update(table, uri_query, data)
+            out = list(db.table_select(table, ""))
             return out
 
         def run_delete_query(
@@ -113,8 +96,8 @@ class TestBackends(object):
             q = SqlGeneratorCls(table, uri_query)
             if verbose:
                 print(q.delete_query)
-            with session_func(engine) as session:
-                session.execute(q.delete_query)
+            db = DbBackendCls(engine)
+            db.table_delete(table, uri_query)
             return True
 
         db = DbBackendCls(engine)
