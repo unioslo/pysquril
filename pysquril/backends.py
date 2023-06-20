@@ -200,6 +200,7 @@ class SqliteBackend(DatabaseBackend):
             raise e
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
+        ts = datetime.datetime.now().isoformat()
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
         with sqlite_session(self.engine) as session:
@@ -207,7 +208,7 @@ class SqliteBackend(DatabaseBackend):
         audit_data = []
         for val in old:
             audit_data.append({
-                'timestamp': datetime.datetime.now().isoformat(),
+                'timestamp': ts,
                 'diff': data,
                 'previous': val,
                 'identity': self.requestor
@@ -216,20 +217,23 @@ class SqliteBackend(DatabaseBackend):
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
+        ts = datetime.datetime.now().isoformat()
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
+        deleted_data = self.table_select(table_name, uri_query)
+        audit_data = []
+        for row in deleted_data:
+            audit_data.append(
+                {
+                    'timestamp': ts,
+                    'diff': None,
+                    'previous': row,
+                    'identity': self.requestor,
+                }
+            )
+        if not table_name.endswith("_audit"):
+            self.table_insert(f'{table_name}_audit', audit_data)
         with sqlite_session(self.engine) as session:
-            try:
-                session.execute(sql.delete_query)
-            except sqlite3.OperationalError as e:
-                logging.error(f'Syntax error?: {sql.delete_query}')
-                raise e
-        if not uri_query:
-            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}_audit"', uri_query)
-            try:
-                with sqlite_session(self.engine) as session:
-                    session.execute(sql.delete_query)
-            except sqlite3.OperationalError:
-                pass # alright if not exists
+            session.execute(sql.delete_query)
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
@@ -356,6 +360,7 @@ class PostgresBackend(object):
             raise e
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
+        ts = datetime.datetime.now().isoformat()
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
         with postgres_session(self.pool) as session:
@@ -363,7 +368,7 @@ class PostgresBackend(object):
         audit_data = []
         for val in old:
             audit_data.append({
-                'timestamp': datetime.datetime.now().isoformat(),
+                'timestamp': ts,
                 'diff': data,
                 'previous': val,
                 'identity': self.requestor
@@ -372,16 +377,23 @@ class PostgresBackend(object):
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
+        ts = datetime.datetime.now().isoformat()
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
+        deleted_data = self.table_select(table_name, uri_query)
+        audit_data = []
+        for row in deleted_data:
+            audit_data.append(
+                {
+                    'timestamp': ts,
+                    'diff': None,
+                    'previous': row,
+                    'identity': self.requestor,
+                }
+            )
+        if not table_name.endswith("_audit"):
+            self.table_insert(f'{table_name}_audit', audit_data)
         with postgres_session(self.pool) as session:
             session.execute(sql.delete_query)
-        if not uri_query:
-            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}_audit"', uri_query)
-            try:
-                with postgres_session(self.pool) as session:
-                    session.execute(sql.delete_query)
-            except psycopg2.errors.UndefinedTable:
-                pass # alright if not exists
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
