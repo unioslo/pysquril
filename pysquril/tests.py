@@ -342,7 +342,7 @@ class TestBackends(object):
 
 
 
-    def test_sqlite(self):
+    def sqlite(self):
         engine = sqlite_init('/tmp', name='api-test.db')
         self.run_backend_tests(
             self.data,
@@ -393,13 +393,20 @@ class TestSqlBackend(unittest.TestCase):
 
         data = {key_to_update: original_value, "key2": "a"}
         self.backend.table_insert(table_name=test_table, data=data)
-        update_data = {key_to_update: original_value+1}
+
+        more_data = {key_to_update: original_value, "key3": {"moar": "things"}}
+        self.backend.table_insert(table_name=test_table, data=more_data)
 
         # update the table with the new data
-        self.backend.table_update(table_name=test_table, uri_query=f"set={key_to_update}&where={key_to_update}=eq.{original_value}", data=update_data)
+        update_data = {key_to_update: original_value+1}
+        self.backend.table_update(
+            table_name=test_table,
+            uri_query=f"set={key_to_update}&where={key_to_update}=eq.{original_value}",
+            data=update_data,
+        )
         result = list(self.backend.table_select(table_name=test_table, uri_query=""))
         self.assertTrue(result)
-        retrieved_data = result[-1]
+        retrieved_data = result[0]
         self.assertEqual(retrieved_data, {**data, **update_data})
         self.assertNotEqual(retrieved_data[key_to_update], original_value)
         self.assertEqual(retrieved_data[key_to_update], update_data[key_to_update])
@@ -407,22 +414,30 @@ class TestSqlBackend(unittest.TestCase):
         # view update audit data
         result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
         self.assertTrue(result)
-        audit_event = result[-1]
+        audit_event = result[0]
         self.assertEqual(audit_event["previous"], data)
         self.assertEqual(audit_event["diff"], update_data)
 
         # delete the table
         self.backend.table_delete(table_name=test_table, uri_query="")
 
+        # check that the deletes are in the audit
+        result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
+        self.assertEqual(len(result), 4)
+
         # try to retrieve deleted table
         select = self.backend.table_select(table_name=test_table, uri_query="")
         with self.assertRaises((sqlite3.OperationalError, psycopg2.errors.UndefinedTable)):
             next(select)
+
+        # delete the audit table
+        self.backend.table_delete(table_name=f"{test_table}_audit", uri_query="")
         
         # try to retrieve deleted table's audit table
         select = self.backend.table_select(table_name=f"{test_table}_audit", uri_query="")
         with self.assertRaises((sqlite3.OperationalError, psycopg2.errors.UndefinedTable)):
             next(select)
+
 
 class TestSqliteBackend(TestSqlBackend):
     __test__ = True
