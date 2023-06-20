@@ -418,6 +418,11 @@ class TestSqlBackend(unittest.TestCase):
         self.assertEqual(audit_event["previous"], data)
         self.assertEqual(audit_event["diff"], update_data)
 
+        # delete a specific entry
+        self.backend.table_delete(table_name=test_table, uri_query="where=key3=not.is.null")
+        result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
+        self.assertEqual(len(result), 3)
+
         # delete the table
         self.backend.table_delete(table_name=test_table, uri_query="")
 
