@@ -6,7 +6,8 @@ import sqlite3
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Union, ContextManager, Iterable, Optional
+from typing import Union, ContextManager, Iterable, Optional, Any
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extensions
@@ -48,6 +49,44 @@ def postgres_session(
         session.close()
         engine.commit()
         pool.putconn(engine)
+
+
+class AuditTransaction(object):
+
+    """
+    Container for generating audit events.
+    Keeps state for transaction IDs, generates
+    timestamps, and event IDs.
+
+    """
+
+    EVENT_UPDATE = "update"
+    EVENT_DELETE = "delete"
+
+    def __init__(self, identity: str) -> None:
+        self.identity = identity
+        self.timestamp = datetime.datetime.now().isoformat()
+        self.transaction_id = self._id()
+
+    def _id(self) -> str:
+        return str(uuid4())
+
+    def _event(self, diff: Any, previous: Any, event: str) -> dict:
+        return {
+            "diff": diff,
+            "previous": previous,
+            "event": event,
+            "timestamp": self.timestamp,
+            "identity": self.identity,
+            "event_id": self._id(),
+            "transaction_id": self.transaction_id,
+        }
+
+    def event_update(self, *, diff: Any, previous: Any) -> dict:
+        return self._event(diff, previous, self.EVENT_UPDATE)
+
+    def event_delete(self, *, diff: Any, previous: Any) -> dict:
+        return self._event(diff, previous, self.EVENT_DELETE)
 
 
 class DatabaseBackend(ABC):
@@ -200,36 +239,24 @@ class SqliteBackend(DatabaseBackend):
             raise e
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
-        ts = datetime.datetime.now().isoformat()
+        tsc = AuditTransaction(self.requestor)
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
         with sqlite_session(self.engine) as session:
             session.execute(sql.update_query)
         audit_data = []
         for val in old:
-            audit_data.append({
-                'timestamp': ts,
-                'diff': data,
-                'previous': val,
-                'identity': self.requestor
-            })
+            audit_data.append(tsc.event_update(diff=data, previous=val))
         self.table_insert(f'{table_name}_audit', audit_data)
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        ts = datetime.datetime.now().isoformat()
+        tsc = AuditTransaction(self.requestor)
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
         deleted_data = self.table_select(table_name, uri_query)
         audit_data = []
         for row in deleted_data:
-            audit_data.append(
-                {
-                    'timestamp': ts,
-                    'diff': None,
-                    'previous': row,
-                    'identity': self.requestor,
-                }
-            )
+            audit_data.append(tsc.event_delete(diff=None, previous=row))
         if not table_name.endswith("_audit"):
             self.table_insert(f'{table_name}_audit', audit_data)
         with sqlite_session(self.engine) as session:
@@ -360,36 +387,24 @@ class PostgresBackend(object):
             raise e
 
     def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
-        ts = datetime.datetime.now().isoformat()
+        tsc = AuditTransaction(self.requestor)
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
         with postgres_session(self.pool) as session:
             session.execute(sql.update_query)
         audit_data = []
         for val in old:
-            audit_data.append({
-                'timestamp': ts,
-                'diff': data,
-                'previous': val,
-                'identity': self.requestor
-            })
+            audit_data.append(tsc.event_update(diff=data, previous=val))
         self.table_insert(f'{table_name}_audit', audit_data)
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        ts = datetime.datetime.now().isoformat()
+        tsc = AuditTransaction(self.requestor)
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
         deleted_data = self.table_select(table_name, uri_query)
         audit_data = []
         for row in deleted_data:
-            audit_data.append(
-                {
-                    'timestamp': ts,
-                    'diff': None,
-                    'previous': row,
-                    'identity': self.requestor,
-                }
-            )
+            audit_data.append(tsc.event_delete(diff=None, previous=row))
         if not table_name.endswith("_audit"):
             self.table_insert(f'{table_name}_audit', audit_data)
         with postgres_session(self.pool) as session:
