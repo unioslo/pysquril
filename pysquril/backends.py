@@ -392,16 +392,15 @@ class SqliteBackend(GenericBackend):
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        tsc = AuditTransaction(self.requestor)
-        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
-        deleted_data = self.table_select(table_name, uri_query)
         audit_data = []
-        for row in deleted_data:
+        tsc = AuditTransaction(self.requestor)
+        for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row))
-        if not table_name.endswith("_audit"):
-            self.table_insert(f'{table_name}_audit', audit_data)
+        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
         with sqlite_session(self.engine) as session:
             session.execute(sql.delete_query)
+            if not table_name.endswith("_audit"):
+                self.table_insert(f'{table_name}_audit', audit_data, session)
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
@@ -565,16 +564,15 @@ class PostgresBackend(GenericBackend):
         return True
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
-        tsc = AuditTransaction(self.requestor)
-        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
-        deleted_data = self.table_select(table_name, uri_query)
         audit_data = []
-        for row in deleted_data:
+        tsc = AuditTransaction(self.requestor)
+        for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row))
-        if not table_name.endswith("_audit"):
-            self.table_insert(f'{table_name}_audit', audit_data)
+        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
         with postgres_session(self.engine) as session:
             session.execute(sql.delete_query)
+            if not table_name.endswith("_audit"):
+                self.table_insert(f'{table_name}_audit', audit_data, session)
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
