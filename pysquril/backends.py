@@ -13,7 +13,7 @@ import psycopg2
 import psycopg2.extensions
 import psycopg2.pool
 
-from pysquril.exc import ParseError
+from pysquril.exc import DataIntegrityError, ParseError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 
 @contextmanager
@@ -234,9 +234,9 @@ class GenericBackend(DatabaseBackend):
                     pk_value = target_entry.get(primary_key)
                     result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
                     if len(result) > 1:
-                        raise Exception(f"primary_key: {primary_key} is not unique")
+                        raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
                     elif not result:
-                        raise Exception(f"primary_key: {primary_key} = {pk_value} did not identify any row")
+                        raise DataIntegrityError(f"primary_key: {primary_key} = {pk_value} did not identify any row")
                     current_entry = result[0]
                     diff = self._diff_entries(current_entry, target_entry)
                     if not diff:
