@@ -153,6 +153,9 @@ class GenericBackend(DatabaseBackend):
 
     """Implementation of common methods for specific backends."""
 
+    def _session_func(self) -> Callable:
+        raise NotImplementedError
+
     def _diff_entries(self, current_entry: dict, target_entry: dict) -> dict:
         """
         Calculate the difference between two dictionaries, show the difference
@@ -213,31 +216,35 @@ class GenericBackend(DatabaseBackend):
         tsc = AuditTransaction(self.requestor)
         # restore deletes before rolling back updates
         # in case an update applies to a deleted row
-        for entry in target_data:
-            if entry.get("event") == "delete":
-                target_entry = entry.get("previous")
-                self.table_insert(table_name, target_entry)
-                self.table_insert(
-                    f"{table_name}_audit", tsc.event_restore(diff=target_entry, previous=None),
-                )
-                work_done["restores"].append(entry)
-        for entry in target_data:
-            if entry.get("event") == "update":
-                target_entry = entry.get("previous")
-                pk_value = target_entry.get(primary_key)
-                result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
-                if len(result) > 1:
-                    raise Exception(f"primary_key: {primary_key} is not unique")
-                elif not result:
-                    raise Exception(f"primary_key: {primary_key} = {pk_value} did not identify any row")
-                current_entry = result[0]
-                diff = self._diff_entries(current_entry, target_entry)
-                if not diff:
-                    continue
-                else:
-                    update_uri_query = f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}"
-                    self.table_update(table_name, update_uri_query, data=diff, tsc=tsc)
-                work_done["updates"].append(entry)
+        session_func = self._session_func()
+        with session_func(self.engine) as session:
+            for entry in target_data:
+                if entry.get("event") == "delete":
+                    target_entry = entry.get("previous")
+                    self.table_insert(table_name, target_entry, session)
+                    self.table_insert(
+                        f"{table_name}_audit",
+                        tsc.event_restore(diff=target_entry, previous=None),
+                        session
+                    )
+                    work_done["restores"].append(entry)
+            for entry in target_data:
+                if entry.get("event") == "update":
+                    target_entry = entry.get("previous")
+                    pk_value = target_entry.get(primary_key)
+                    result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
+                    if len(result) > 1:
+                        raise Exception(f"primary_key: {primary_key} is not unique")
+                    elif not result:
+                        raise Exception(f"primary_key: {primary_key} = {pk_value} did not identify any row")
+                    current_entry = result[0]
+                    diff = self._diff_entries(current_entry, target_entry)
+                    if not diff:
+                        continue
+                    else:
+                        update_uri_query = f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}"
+                        self.table_update(table_name, update_uri_query, data=diff, tsc=tsc)
+                    work_done["updates"].append(entry)
         return work_done
 
 
@@ -279,7 +286,7 @@ class SqliteBackend(GenericBackend):
     def __init__(
         self,
         engine: sqlite3.Connection,
-        verbose: bool =False,
+        verbose: bool = False,
         schema: str = None,
         requestor: str = None,
     ) -> None:
@@ -289,6 +296,9 @@ class SqliteBackend(GenericBackend):
         self.schema = schema if schema else ""
         self.sep = "_" if self.schema else ""
         self.requestor = requestor
+
+    def _session_func(self) -> Callable:
+        return sqlite_session
 
     def initialise(self) -> Optional[bool]:
         pass
@@ -315,7 +325,12 @@ class SqliteBackend(GenericBackend):
                     out.append(name)
             return out
 
-    def table_insert(self, table_name: str, data: Union[dict, list], session: sqlite3.Cursor = None) -> bool:
+    def table_insert(
+        self,
+        table_name: str,
+        data: Union[dict, list],
+        session: Optional[sqlite3.Cursor] = None,
+    ) -> bool:
         try:
             dtype = type(data)
             insert_stmt = f'insert into "{self.schema}{self.sep}{table_name}" (data) values (?)'
@@ -325,15 +340,22 @@ class SqliteBackend(GenericBackend):
                     target.append((json.dumps(element),))
             elif dtype is dict:
                 target.append((json.dumps(data),))
-            try:
-                with sqlite_session(self.engine) as session:
-                    session.executemany(insert_stmt, target)
+            if session:
+                # in this case we are re-using a session
+                # from a context manager estabilshed by the caller
+                # and if an exception is raised, the caller handles it
+                session.executemany(insert_stmt, target)
                 return True
-            except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
-                with sqlite_session(self.engine) as session:
-                    session.execute(f'create table if not exists "{self.schema}{self.sep}{table_name}" {self.table_definition}')
-                    session.executemany(insert_stmt, target)
-                return True
+            else:
+                try:
+                    with sqlite_session(self.engine) as session:
+                        session.executemany(insert_stmt, target)
+                    return True
+                except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
+                    with sqlite_session(self.engine) as session:
+                        session.execute(f'create table if not exists "{self.schema}{self.sep}{table_name}" {self.table_definition}')
+                        session.executemany(insert_stmt, target)
+                    return True
         except sqlite3.IntegrityError as e:
             logging.info('Ignoring duplicate row')
             return True # idempotent PUT
@@ -418,15 +440,18 @@ class PostgresBackend(GenericBackend):
         schema: str = None,
         requestor: str = None,
     ) -> None:
-        self.pool = pool
+        self.engine = pool
         self.verbose = verbose
         self.table_definition = '(data jsonb not null, uniq text unique not null)'
         self.schema = schema if schema else 'public'
         self.requestor = requestor
 
+    def _session_func(self) -> Callable:
+        return postgres_session
+
     def initialise(self) -> Optional[bool]:
         try:
-            with postgres_session(self.pool) as session:
+            with postgres_session(self.engine) as session:
                 for stmt in self.generator_class.db_init_sql:
                         session.execute(stmt)
         except psycopg2.InternalError as e:
@@ -436,7 +461,7 @@ class PostgresBackend(GenericBackend):
     def tables_list(self, exclude_endswith: list = [], only_endswith: Optional[str] = None, remove_pattern: Optional[str] = None) -> list:
         query = f"""select table_name from information_schema.tables
             where table_schema = '{self.schema}' order by table_name asc"""
-        with postgres_session(self.pool) as session:
+        with postgres_session(self.engine) as session:
             session.execute(query)
             res = session.fetchall()
         if not res:
@@ -457,7 +482,12 @@ class PostgresBackend(GenericBackend):
                     out.append(name)
             return out
 
-    def table_insert(self, table_name: str, data: Union[dict, list]) -> bool:
+    def table_insert(
+        self,
+        table_name: str,
+        data: Union[dict, list],
+        session: Optional[psycopg2.extensions.cursor] = None,
+    ) -> bool:
         try:
             dtype = type(data)
             insert_stmt = f'insert into {self.schema}{self.sep}"{table_name}" (data) values (%s)'
@@ -467,21 +497,28 @@ class PostgresBackend(GenericBackend):
                     target.append((json.dumps(element),))
             elif dtype is dict:
                 target.append((json.dumps(data),))
-            try:
-                with postgres_session(self.pool) as session:
-                    session.executemany(insert_stmt, target)
+            if session:
+                # in this case we are re-using a session
+                # from a context manager estabilshed by the caller
+                # and if an exception is raised, the caller handles it
+                session.executemany(insert_stmt, target)
                 return True
-            except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
-                table_create = f'create table if not exists {self.schema}{self.sep}"{table_name}"{self.table_definition}'
-                trigger_create = f"""
-                    create trigger ensure_unique_data before insert on {self.schema}{self.sep}"{table_name}"
-                    for each row execute procedure unique_data()"""
-                with postgres_session(self.pool) as session:
-                    session.execute(f'create schema if not exists {self.schema}')
-                    session.execute(table_create)
-                    session.execute(trigger_create)
-                    session.executemany(insert_stmt, target)
-                return True
+            else:
+                try:
+                    with postgres_session(self.engine) as session:
+                        session.executemany(insert_stmt, target)
+                    return True
+                except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
+                    table_create = f'create table if not exists {self.schema}{self.sep}"{table_name}"{self.table_definition}'
+                    trigger_create = f"""
+                        create trigger ensure_unique_data before insert on {self.schema}{self.sep}"{table_name}"
+                        for each row execute procedure unique_data()"""
+                    with postgres_session(self.engine) as session:
+                        session.execute(f'create schema if not exists {self.schema}')
+                        session.execute(table_create)
+                        session.execute(trigger_create)
+                        session.executemany(insert_stmt, target)
+                    return True
         except psycopg2.IntegrityError as e:
             logging.info('Ignoring duplicate row')
             return True # idempotent PUT
@@ -499,7 +536,7 @@ class PostgresBackend(GenericBackend):
         tsc = AuditTransaction(self.requestor) if not tsc else tsc
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
-        with postgres_session(self.pool) as session:
+        with postgres_session(self.engine) as session:
             session.execute(sql.update_query)
         audit_data = []
         for val in old:
@@ -516,7 +553,7 @@ class PostgresBackend(GenericBackend):
             audit_data.append(tsc.event_delete(diff=None, previous=row))
         if not table_name.endswith("_audit"):
             self.table_insert(f'{table_name}_audit', audit_data)
-        with postgres_session(self.pool) as session:
+        with postgres_session(self.engine) as session:
             session.execute(sql.delete_query)
         return True
 
@@ -536,7 +573,7 @@ class PostgresBackend(GenericBackend):
         else:
             sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
             query = sql.select_query
-        with postgres_session(self.pool) as session:
+        with postgres_session(self.engine) as session:
             session.execute(query)
             for row in session:
                 yield row[0]
