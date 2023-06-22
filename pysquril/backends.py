@@ -6,13 +6,14 @@ import sqlite3
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Union, ContextManager, Iterable, Optional, Any
+from typing import Union, ContextManager, Iterable, Optional, Any, Callable
 from uuid import uuid4
 
 import psycopg2
 import psycopg2.extensions
 import psycopg2.pool
 
+from pysquril.exc import ParseError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 
 @contextmanager
@@ -60,9 +61,6 @@ class AuditTransaction(object):
 
     """
 
-    EVENT_UPDATE = "update"
-    EVENT_DELETE = "delete"
-
     def __init__(self, identity: str) -> None:
         self.identity = identity
         self.timestamp = datetime.datetime.now().isoformat()
@@ -83,10 +81,13 @@ class AuditTransaction(object):
         }
 
     def event_update(self, *, diff: Any, previous: Any) -> dict:
-        return self._event(diff, previous, self.EVENT_UPDATE)
+        return self._event(diff, previous, "update")
 
     def event_delete(self, *, diff: Any, previous: Any) -> dict:
-        return self._event(diff, previous, self.EVENT_DELETE)
+        return self._event(diff, previous, "delete")
+
+    def event_restore(self, *, diff: Any, previous: Any) -> dict:
+        return self._event(diff, previous, "restore")
 
 
 class DatabaseBackend(ABC):
@@ -116,23 +117,131 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
-    def table_insert(self, table_name: str, data: Union[dict, list]) -> bool:
+    def table_insert(
+        self,
+        table_name: str,
+        data: Union[dict, list],
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
         pass
 
     @abstractmethod
-    def table_update(self, table_name: str, uri: str, data: dict) -> bool:
+    def table_update(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: dict,
+        tsc: Optional[AuditTransaction] = None,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
         pass
 
     @abstractmethod
-    def table_delete(self, table_name: str, uri: str) -> bool:
+    def table_delete(self, table_name: str, uri_query: str) -> bool:
         pass
 
     @abstractmethod
-    def table_select(self, table_name: str, uri: str, data: Optional[Union[dict, list]] = None) -> Iterable[tuple]:
+    def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None) -> Iterable[tuple]:
+        pass
+
+    @abstractmethod
+    def table_restore(self, table_name: str, uri_query: str) -> bool:
         pass
 
 
-class SqliteBackend(DatabaseBackend):
+class GenericBackend(DatabaseBackend):
+
+    """Implementation of common methods for specific backends."""
+
+    def _diff_entries(self, current_entry: dict, target_entry: dict) -> dict:
+        """
+        Calculate the difference between two dictionaries, show the difference
+        between the previous relative to current entry. E.g.:
+
+        _diff_entries({a: 3, b: 4}, {a: 3, b: 5}) -> {b: 5}
+
+        The diff is recorded in the new audit log when moving the state
+        from current to previous.
+
+        """
+        out = {}
+        for k, v in target_entry.items():
+            if current_entry.get(k) != v:
+                out[k] = v
+        return out
+
+    def table_restore(self, table_name: str, uri_query: str) -> dict:
+        """
+        Restore rows to previous states, as recorded in the audit log.
+
+        This can be either: undoing a delete, or undoing one or more
+        updates. Client must provide the primary key which is used
+        as the unique identifier, so we are able to identify the current
+        row to which we need to apply changes. E.g.:
+
+        ?rollback&where=transaction_id=eq.uuid&primary_key=key_name
+        ?rollback&where=event_id=eq.uuid&primary_key=key_name
+        ?rollback&primary_key=key_name
+
+        """
+        work_done = {"restores": [], "updates": []}
+        query_parts = uri_query.split("&")
+        if not query_parts:
+            raise ParseError("Missing query")
+        if "rollback" not in query_parts:
+            raise ParseError("Missing rollback directive")
+        for part in query_parts:
+            has_pk = False
+            if part.startswith("primary_key"):
+                primary_key = part.split("=")[-1]
+                if primary_key == "":
+                    raise ParseError("Missing primary_key value")
+                else:
+                    has_pk = True
+                    break
+        if not has_pk:
+            raise ParseError("Missing primary_key")
+        # process audit data from oldest to newest
+        # in case the result set contains multiple updates
+        # on the same row, then the oldest state will apply
+        if "order" in query_parts:
+            uri_query = uri_query.split("&order")[0]
+        uri_query = f"{uri_query}&order=timestamp.asc"
+        target_data = list(self.table_select(f"{table_name}_audit", uri_query))
+        if not target_data:
+            return False
+        tsc = AuditTransaction(self.requestor)
+        # restore deletes before rolling back updates
+        # in case an update applies to a deleted row
+        for entry in target_data:
+            if entry.get("event") == "delete":
+                target_entry = entry.get("previous")
+                self.table_insert(table_name, target_entry)
+                self.table_insert(
+                    f"{table_name}_audit", tsc.event_restore(diff=target_entry, previous=None),
+                )
+                work_done["restores"].append(entry)
+        for entry in target_data:
+            if entry.get("event") == "update":
+                target_entry = entry.get("previous")
+                pk_value = target_entry.get(primary_key)
+                result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
+                if len(result) > 1:
+                    raise Exception(f"primary_key: {primary_key} is not unique")
+                elif not result:
+                    raise Exception(f"primary_key: {primary_key} = {pk_value} did not identify any row")
+                current_entry = result[0]
+                diff = self._diff_entries(current_entry, target_entry)
+                if not diff:
+                    continue
+                else:
+                    update_uri_query = f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}"
+                    self.table_update(table_name, update_uri_query, data=diff, tsc=tsc)
+                work_done["updates"].append(entry)
+        return work_done
+
+
+class SqliteBackend(GenericBackend):
 
     """
     This backend works reliably, and offers decent read-write
@@ -206,7 +315,7 @@ class SqliteBackend(DatabaseBackend):
                     out.append(name)
             return out
 
-    def table_insert(self, table_name: str, data: Union[dict, list]) -> bool:
+    def table_insert(self, table_name: str, data: Union[dict, list], session: sqlite3.Cursor = None) -> bool:
         try:
             dtype = type(data)
             insert_stmt = f'insert into "{self.schema}{self.sep}{table_name}" (data) values (?)'
@@ -238,8 +347,8 @@ class SqliteBackend(DatabaseBackend):
             logging.error('Not sure what went wrong')
             raise e
 
-    def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
-        tsc = AuditTransaction(self.requestor)
+    def table_update(self, table_name: str, uri_query: str, data: dict, tsc: Optional[AuditTransaction] = None) -> bool:
+        tsc = AuditTransaction(self.requestor) if not tsc else tsc
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
         with sqlite_session(self.engine) as session:
@@ -284,7 +393,7 @@ class SqliteBackend(DatabaseBackend):
                 yield json.loads(row[0])
 
 
-class PostgresBackend(object):
+class PostgresBackend(GenericBackend):
 
     """
     A PostgreSQL backend. PostgreSQL is a full-fledged
@@ -386,8 +495,8 @@ class PostgresBackend(object):
             logging.error('Not sure what went wrong')
             raise e
 
-    def table_update(self, table_name: str, uri_query: str, data: dict) -> bool:
-        tsc = AuditTransaction(self.requestor)
+    def table_update(self, table_name: str, uri_query: str, data: dict, tsc: Optional[AuditTransaction] = None) -> bool:
+        tsc = AuditTransaction(self.requestor) if not tsc else tsc
         old = list(self.table_select(table_name, uri_query, data=data))
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
         with postgres_session(self.pool) as session:
