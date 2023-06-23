@@ -440,21 +440,23 @@ class TestSqlBackend(unittest.TestCase):
             table_name=test_table,
             uri_query=f"rollback&primary_key={pkey}&where=event_id=eq.{audit_event.get('event_id')}"
         )
-        self.assertTrue(result is not None) # TODO: refine
+        self.assertEqual(len(result.get("updates")), 1)
+        self.assertEqual(len(result.get("restores")), 0)
         result = list(self.backend.table_select(table_name=test_table, uri_query="where=id=eq.1"))
         self.assertEqual(result[0].get(key_to_update), original_value)
 
         # delete a specific entry
         self.backend.table_delete(table_name=test_table, uri_query="where=key3=not.is.null")
         result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
-        #self.assertEqual(len(result), 4)
+        self.assertEqual(len(result), 4)
 
         # restore the deleted entry
         result = self.backend.table_restore(
             table_name=test_table,
             uri_query=f"rollback&primary_key={pkey}&where=event=eq.delete"
         )
-        self.assertTrue(result is not None) # TODO: refine
+        self.assertEqual(len(result.get("updates")), 0)
+        self.assertEqual(len(result.get("restores")), 1)
         result = list(self.backend.table_select(table_name=test_table, uri_query="where=id=eq.2"))
         self.assertTrue(result[0] is not None)
 
@@ -463,7 +465,16 @@ class TestSqlBackend(unittest.TestCase):
 
         # check that the deletes are in the audit
         result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
-        #self.assertEqual(len(result), 4)
+        self.assertEqual(len(result), 7)
+
+        """
+        # restore everything TODO
+        result = self.backend.table_restore(table_name=test_table, uri_query=f"rollback&primary_key={pkey}")
+        self.assertTrue(result is not None)
+
+        # delete the table (again)
+        self.backend.table_delete(table_name=test_table, uri_query="")
+        """
 
         # try to retrieve deleted table
         select = self.backend.table_select(table_name=test_table, uri_query="")
