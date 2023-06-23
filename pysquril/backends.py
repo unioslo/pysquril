@@ -117,6 +117,14 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
+    def table_create(
+        self,
+        table_name: str,
+        session: Union[sqlite3.Cursor, psycopg2.extensions.cursor],
+    ) -> bool:
+        pass
+
+    @abstractmethod
     def table_insert(
         self,
         table_name: str,
@@ -325,6 +333,14 @@ class SqliteBackend(GenericBackend):
                     out.append(name)
             return out
 
+    def table_create(
+        self,
+        table_name: str,
+        session: sqlite3.Cursor,
+    ) -> bool:
+        session.execute(f'create table if not exists "{self.schema}{self.sep}{table_name}" {self.table_definition}')
+        return True
+
     def table_insert(
         self,
         table_name: str,
@@ -353,7 +369,7 @@ class SqliteBackend(GenericBackend):
                     return True
                 except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
                     with sqlite_session(self.engine) as session:
-                        session.execute(f'create table if not exists "{self.schema}{self.sep}{table_name}" {self.table_definition}')
+                        self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
                     return True
         except sqlite3.IntegrityError as e:
@@ -491,6 +507,22 @@ class PostgresBackend(GenericBackend):
                     out.append(name)
             return out
 
+    def table_create(
+        self,
+        table_name: str,
+        session: psycopg2.extensions.cursor,
+    ) -> bool:
+        table_create = f'create table if not exists {self.schema}{self.sep}"{table_name}"{self.table_definition}'
+        trigger_create = f"""
+            create trigger ensure_unique_data before insert
+            on {self.schema}{self.sep}"{table_name}"
+            for each row execute procedure unique_data()
+        """
+        session.execute(f'create schema if not exists {self.schema}')
+        session.execute(table_create)
+        session.execute(trigger_create)
+
+
     def table_insert(
         self,
         table_name: str,
@@ -518,14 +550,8 @@ class PostgresBackend(GenericBackend):
                         session.executemany(insert_stmt, target)
                     return True
                 except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
-                    table_create = f'create table if not exists {self.schema}{self.sep}"{table_name}"{self.table_definition}'
-                    trigger_create = f"""
-                        create trigger ensure_unique_data before insert on {self.schema}{self.sep}"{table_name}"
-                        for each row execute procedure unique_data()"""
                     with postgres_session(self.engine) as session:
-                        session.execute(f'create schema if not exists {self.schema}')
-                        session.execute(table_create)
-                        session.execute(trigger_create)
+                        self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
                     return True
         except psycopg2.IntegrityError as e:
