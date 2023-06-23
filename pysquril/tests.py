@@ -467,14 +467,15 @@ class TestSqlBackend(unittest.TestCase):
         result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
         self.assertEqual(len(result), 7)
 
-        """
         # restore everything TODO
         result = self.backend.table_restore(table_name=test_table, uri_query=f"rollback&primary_key={pkey}")
         self.assertTrue(result is not None)
+        result = list(self.backend.table_select(table_name=test_table, uri_query="order=id.asc"))
+        self.assertEqual(result[0], data)
+        self.assertEqual(result[1], more_data)
 
         # delete the table (again)
         self.backend.table_delete(table_name=test_table, uri_query="")
-        """
 
         # try to retrieve deleted table
         select = self.backend.table_select(table_name=test_table, uri_query="")

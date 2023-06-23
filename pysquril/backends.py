@@ -217,7 +217,7 @@ class GenericBackend(DatabaseBackend):
         # on the same row, then the oldest state will apply
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
-        uri_query = f"{uri_query}&order=timestamp.asc"
+        uri_query = f"{uri_query}&order=timestamp.desc"
         target_data = list(self.table_select(f"{table_name}_audit", uri_query))
         if not target_data:
             return False
@@ -225,34 +225,50 @@ class GenericBackend(DatabaseBackend):
         # restore deletes before rolling back updates
         # in case an update applies to a deleted row
         session_func = self._session_func()
-        with session_func(self.engine) as session:
-            for entry in target_data:
-                if entry.get("event") == "delete":
-                    target_entry = entry.get("previous")
-                    self.table_insert(table_name, target_entry, session)
-                    self.table_insert(
-                        f"{table_name}_audit",
-                        tsc.event_restore(diff=target_entry, previous=None),
-                        session
-                    )
-                    work_done["restores"].append(entry)
-            for entry in target_data:
-                if entry.get("event") == "update":
-                    target_entry = entry.get("previous")
-                    pk_value = target_entry.get(primary_key)
-                    result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
-                    if len(result) > 1:
-                        raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
-                    elif not result:
-                        raise DataIntegrityError(f"primary_key: {primary_key} = {pk_value} did not identify any row")
-                    current_entry = result[0]
-                    diff = self._diff_entries(current_entry, target_entry)
-                    if not diff:
-                        continue
+        # ensure the table exists, may have been deleted
+        try:
+            with session_func(self.engine) as session:
+                self.table_create(table_name, session)
+        except Exception as e:
+            pass # already exists
+        restored = []
+        for entry in target_data:
+            if entry.get("event") == "delete":
+                target_entry = entry.get("previous")
+                pk_value = target_entry.get(primary_key)
+                if target_entry in restored:
+                    continue # no need to restore twice
+                else:
+                    if list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}")):
+                        continue # then we're trying to restore an existing entry
                     else:
-                        update_uri_query = f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}"
+                        with session_func(self.engine) as session:
+                            self.table_insert(table_name, target_entry, session)
+                            self.table_insert(
+                                f"{table_name}_audit",
+                                tsc.event_restore(diff=target_entry, previous=None),
+                                session
+                            )
+                        work_done["restores"].append(entry)
+                        restored.append(target_entry)
+        for entry in target_data:
+            if entry.get("event") == "update":
+                target_entry = entry.get("previous")
+                pk_value = target_entry.get(primary_key)
+                result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
+                if len(result) > 1:
+                    raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
+                elif not result:
+                    raise DataIntegrityError(f"primary_key: {primary_key} = {pk_value} did not identify any row")
+                current_entry = result[0]
+                diff = self._diff_entries(current_entry, target_entry)
+                if not diff:
+                    continue
+                else:
+                    update_uri_query = f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}"
+                    with session_func(self.engine) as session:
                         self.table_update(table_name, update_uri_query, data=diff, tsc=tsc, session=session)
-                    work_done["updates"].append(entry)
+                work_done["updates"].append(entry)
         return work_done
 
 
