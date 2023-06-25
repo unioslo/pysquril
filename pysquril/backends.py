@@ -185,17 +185,39 @@ class GenericBackend(DatabaseBackend):
         """
         Restore rows to previous states, as recorded in the audit log.
 
-        This can be either: undoing a delete, or undoing one or more
-        updates. Client must provide the primary key which is used
-        as the unique identifier, so we are able to identify the current
-        row to which we need to apply changes. E.g.:
+        This can be either: undoing a delete, or updating a current
+        record to a state prior to a specific update. The desired
+        state is specified by means of a URI query. If the query
+        yields multiple states of the same row, then the restore
+        function will choose the oldest state, and ignore newer ones.
 
-        ?rollback&where=transaction_id=eq.uuid&primary_key=key_name
-        ?rollback&where=event_id=eq.uuid&primary_key=key_name
-        ?rollback&primary_key=key_name
+        Clients must provide the primary key which is used
+        as the unique identifier, so we are able to identify the current
+        row to which we need to apply changes.
+
+        Examples:
+
+        - restore one or more rows to a state prior to a specific
+          update call:
+
+            ?rollback&where=transaction_id=eq.uuid&primary_key=key_name
+
+        - restore a specific row to a prior state:
+
+            ?rollback&where=event_id=eq.uuid&primary_key=key_name
+
+        - restore all rows to their first state after insert, before
+          update or deletion:
+
+            ?rollback&primary_key=key_name
+
+        When deleted rows are restored the event is recorded in the
+        audit log as "restore" events. Such events are ignored by
+        this function: that is, restore events are not restored,
+        only updates and deletes.
 
         """
-        work_done = {"restores": [], "updates": []}
+        # ensure we have enough information
         query_parts = uri_query.split("&")
         if not query_parts:
             raise ParseError("Missing query")
@@ -212,63 +234,70 @@ class GenericBackend(DatabaseBackend):
                     break
         if not has_pk:
             raise ParseError("Missing primary_key")
-        # process audit data from oldest to newest
-        # in case the result set contains multiple updates
-        # on the same row, then the oldest state will apply
+        # fetch a copy of the current state, and all primay keys
+        table_exists = False
+        try:
+            current_data = list(self.table_select(table_name, ""))
+            current_pks = list(self.table_select(table_name, f"select={primary_key}"))
+            table_exists = True
+        except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
+            current_data = []
+            current_pks = []
+        # fetch the desired state
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
-        uri_query = f"{uri_query}&order=timestamp.desc"
+        uri_query = f"{uri_query}&order=timestamp.asc" # sorted from old to new
         target_data = list(self.table_select(f"{table_name}_audit", uri_query))
         if not target_data:
-            return False
+            return False # nothing to do
         tsc = AuditTransaction(self.requestor)
-        # restore deletes before rolling back updates
-        # in case an update applies to a deleted row
         session_func = self._session_func()
-        # ensure the table exists, may have been deleted
         try:
+            # ensure the table exists, may have been deleted
             with session_func(self.engine) as session:
                 self.table_create(table_name, session)
-        except Exception as e:
+        except psycopg2.errors.DuplicateObject as e:
             pass # already exists
-        restored = []
-        for entry in target_data:
-            if entry.get("event") == "delete":
+        handled = []
+        work_done = {"restores": [], "updates": []}
+        with session_func(self.engine) as session:
+            for entry in target_data:
+                target_entry = entry.get("previous")
+                pk_value = target_entry.get(primary_key) if target_entry else None
+                if pk_value in handled or entry.get("event") == "restore":
+                    continue
                 target_entry = entry.get("previous")
                 pk_value = target_entry.get(primary_key)
-                if target_entry in restored:
-                    continue # no need to restore twice
-                else:
-                    if list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}")):
-                        continue # then we're trying to restore an existing entry
-                    else:
-                        with session_func(self.engine) as session:
-                            self.table_insert(table_name, target_entry, session)
-                            self.table_insert(
-                                f"{table_name}_audit",
-                                tsc.event_restore(diff=target_entry, previous=None),
-                                session
-                            )
-                        work_done["restores"].append(entry)
-                        restored.append(target_entry)
-        for entry in target_data:
-            if entry.get("event") == "update":
-                target_entry = entry.get("previous")
-                pk_value = target_entry.get(primary_key)
-                result = list(self.table_select(table_name, f"where={primary_key}=eq.{pk_value}"))
+                result = list(
+                    self.table_select(
+                        table_name,
+                        f"where={primary_key}=eq.{pk_value}",
+                    )
+                )
                 if len(result) > 1:
                     raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
                 elif not result:
-                    raise DataIntegrityError(f"primary_key: {primary_key} = {pk_value} did not identify any row")
-                current_entry = result[0]
-                diff = self._diff_entries(current_entry, target_entry)
-                if not diff:
-                    continue
+                    # then it is currently deleted
+                    self.table_insert(table_name, target_entry, session)
+                    self.table_insert(
+                        f"{table_name}_audit",
+                        tsc.event_restore(diff=target_entry, previous=None),
+                        session,
+                    )
+                    work_done["restores"].append(entry)
                 else:
-                    update_uri_query = f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}"
-                    with session_func(self.engine) as session:
-                        self.table_update(table_name, update_uri_query, data=diff, tsc=tsc, session=session)
-                work_done["updates"].append(entry)
+                    current_entry = result[0]
+                    diff = self._diff_entries(current_entry, target_entry)
+                    if diff:
+                        self.table_update(
+                            table_name,
+                            f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}",
+                            data=diff,
+                            tsc=tsc,
+                            session=session,
+                        )
+                    work_done["updates"].append(entry)
+                handled.append(pk_value)
         return work_done
 
 
@@ -533,7 +562,7 @@ class PostgresBackend(GenericBackend):
             create trigger ensure_unique_data before insert
             on {self.schema}{self.sep}"{table_name}"
             for each row execute procedure unique_data()
-        """
+        """ # change to create if not exists when pg ^v11
         session.execute(f'create schema if not exists {self.schema}')
         session.execute(table_create)
         session.execute(trigger_create)
