@@ -200,16 +200,16 @@ class GenericBackend(DatabaseBackend):
         - restore one or more rows to a state prior to a specific
           update call:
 
-            ?rollback&where=transaction_id=eq.uuid&primary_key=key_name
+            ?restore&where=transaction_id=eq.uuid&primary_key=key_name
 
         - restore a specific row to a prior state:
 
-            ?rollback&where=event_id=eq.uuid&primary_key=key_name
+            ?restore&where=event_id=eq.uuid&primary_key=key_name
 
         - restore all rows to their first state after insert, before
           update or deletion:
 
-            ?rollback&primary_key=key_name
+            ?restore&primary_key=key_name
 
         When deleted rows are restored the event is recorded in the
         audit log as "restore" events. Such events are ignored by
@@ -221,8 +221,8 @@ class GenericBackend(DatabaseBackend):
         query_parts = uri_query.split("&")
         if not query_parts:
             raise ParseError("Missing query")
-        if "rollback" not in query_parts:
-            raise ParseError("Missing rollback directive")
+        if "restore" not in query_parts:
+            raise ParseError("Missing restore directive")
         for part in query_parts:
             has_pk = False
             if part.startswith("primary_key"):

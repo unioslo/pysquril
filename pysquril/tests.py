@@ -427,18 +427,18 @@ class TestSqlBackend(unittest.TestCase):
         self.assertTrue(audit_event["event_id"] is not None)
         self.assertTrue(audit_event["timestamp"] is not None)
 
-        # rollback updates
-        with self.assertRaises(ParseError): # missing rollback directive
+        # restore updates
+        with self.assertRaises(ParseError): # missing restore directive
             self.backend.table_restore(table_name=test_table, uri_query="")
         with self.assertRaises(ParseError): # missing primary key
-            self.backend.table_restore(table_name=test_table, uri_query="rollback")
+            self.backend.table_restore(table_name=test_table, uri_query="restore")
         with self.assertRaises(ParseError): # still missing primary key
-            self.backend.table_restore(table_name=test_table, uri_query="rollback&primary_key=")
+            self.backend.table_restore(table_name=test_table, uri_query="restore&primary_key=")
 
-        # rollback to a specific state, for a specific row
+        # restore to a specific state, for a specific row
         result = self.backend.table_restore(
             table_name=test_table,
-            uri_query=f"rollback&primary_key={pkey}&where=event_id=eq.{audit_event.get('event_id')}"
+            uri_query=f"restore&primary_key={pkey}&where=event_id=eq.{audit_event.get('event_id')}"
         )
         self.assertEqual(len(result.get("updates")), 1)
         self.assertEqual(len(result.get("restores")), 0)
@@ -453,7 +453,7 @@ class TestSqlBackend(unittest.TestCase):
         # restore the deleted entry
         result = self.backend.table_restore(
             table_name=test_table,
-            uri_query=f"rollback&primary_key={pkey}&where=event=eq.delete"
+            uri_query=f"restore&primary_key={pkey}&where=event=eq.delete"
         )
         self.assertEqual(len(result.get("updates")), 0)
         self.assertEqual(len(result.get("restores")), 1)
@@ -467,8 +467,8 @@ class TestSqlBackend(unittest.TestCase):
         result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
         self.assertEqual(len(result), 7)
 
-        # restore everything TODO
-        result = self.backend.table_restore(table_name=test_table, uri_query=f"rollback&primary_key={pkey}")
+        # restore everything
+        result = self.backend.table_restore(table_name=test_table, uri_query=f"restore&primary_key={pkey}")
         self.assertTrue(result is not None)
         result = list(self.backend.table_select(table_name=test_table, uri_query="order=id.asc"))
         self.assertEqual(result[0], data)
