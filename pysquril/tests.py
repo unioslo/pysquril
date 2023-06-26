@@ -490,6 +490,15 @@ class TestSqlBackend(unittest.TestCase):
         with self.assertRaises((sqlite3.OperationalError, psycopg2.errors.UndefinedTable)):
             next(select)
 
+        # test deleting an entire table, without any updates
+        # automatic audit table creation on delete
+        some_data = {"id": 0, "lol": None, "cat": [1, 2]}
+        some_table = "yay"
+        self.backend.table_insert(table_name=some_table, data=some_data)
+        self.backend.table_delete(table_name=some_table, uri_query="")
+        audit = list(self.backend.table_select(table_name=f"{some_table}_audit", uri_query=""))
+        self.assertEqual(audit[0].get("previous"), some_data)
+
 
 class TestSqliteBackend(TestSqlBackend):
     __test__ = True
