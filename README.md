@@ -6,7 +6,8 @@ Python implementation of structured URI query language.
 ## Tests
 
 ```bash
-pytest pysquril/tests.py
+poetry install
+poetry run python pytest pysquril/tests.py
 ```
 
 ## License
