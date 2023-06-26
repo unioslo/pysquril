@@ -1,9 +1,12 @@
 [tool.poetry]
 name = "pysquril"
-version = "0.2.2"
+version = "0.3.0"
 description = "Python implementation of structured URI query language"
 repository = "https://github.com/unioslo/pysquril"
-authors = ["Leon du Toit <l.c.d.toit@usit.uio.no>"]
+authors = [
+    "Leon du Toit <l.c.d.toit@usit.uio.no>",
+    "Eirik Haatveit <haatveit@uio.no>",
+]
 
 [tool.poetry.dependencies]
 python = "^3.7"
