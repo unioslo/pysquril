@@ -461,6 +461,7 @@ class SqliteBackend(GenericBackend):
         with sqlite_session(self.engine) as session:
             session.execute(sql.delete_query)
             if not table_name.endswith("_audit"):
+                self.table_create(f'{table_name}_audit', session)
                 self.table_insert(f'{table_name}_audit', audit_data, session)
         return True
 
@@ -563,9 +564,14 @@ class PostgresBackend(GenericBackend):
             on {self.schema}{self.sep}"{table_name}"
             for each row execute procedure unique_data()
         """ # change to create if not exists when pg ^v11
-        session.execute(f'create schema if not exists {self.schema}')
-        session.execute(table_create)
-        session.execute(trigger_create)
+        session.execute( # need to check if table exists
+            f"select exists(select from pg_tables where schemaname = '{self.schema}' and tablename = '{table_name}')"
+        )
+        exists = session.fetchall()[0][0]
+        if not exists:
+            session.execute(f'create schema if not exists {self.schema}')
+            session.execute(table_create)
+            session.execute(trigger_create)
 
 
     def table_insert(
@@ -643,6 +649,7 @@ class PostgresBackend(GenericBackend):
         with postgres_session(self.engine) as session:
             session.execute(sql.delete_query)
             if not table_name.endswith("_audit"):
+                self.table_create(f'{table_name}_audit', session)
                 self.table_insert(f'{table_name}_audit', audit_data, session)
         return True
 
