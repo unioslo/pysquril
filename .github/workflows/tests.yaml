@@ -1,6 +1,12 @@
 name: Run package tests 
 
-on: [push, pull_request]
+on:
+  push:
+    paths:
+      - "pysquril/**"
+      - "pyproject.toml"
+      - "poetry.lock"
+      - ".github/workflows/tests.yaml"
 
 env:
   POETRY_VERSION: 1.3.2
