@@ -492,12 +492,20 @@ class TestSqlBackend(unittest.TestCase):
 
         # test deleting an entire table, without any updates
         # automatic audit table creation on delete
-        some_data = {"id": 0, "lol": None, "cat": [1, 2]}
+        # use a nested primary key, to test restores with such keys
+        some_data = {"pk": {"id": 0}, "lol": None, "cat": [1, 2]}
+        some_more_data = {"pk": {"id": 1}, "neither-lol-not-not-lol": None, "cat": []}
         some_table = "yay"
         self.backend.table_insert(table_name=some_table, data=some_data)
+        self.backend.table_insert(table_name=some_table, data=some_more_data)
         self.backend.table_delete(table_name=some_table, uri_query="")
         audit = list(self.backend.table_select(table_name=f"{some_table}_audit", uri_query=""))
-        self.assertEqual(audit[0].get("previous"), some_data)
+        self.assertTrue(len(audit), 2)
+        nested_result = self.backend.table_restore(
+            table_name=some_table, uri_query=f"restore&primary_key=pk.id"
+        )
+        self.assertEqual(len(nested_result.get("restores")), 2)
+        self.backend.table_delete(table_name=f"{some_table}_audit", uri_query="")
 
 
 class TestSqliteBackend(TestSqlBackend):
