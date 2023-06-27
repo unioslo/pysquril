@@ -181,6 +181,16 @@ class GenericBackend(DatabaseBackend):
                 out[k] = v
         return out
 
+    def _get_pk_value(self, primary_key: str, entry: dict) -> Any:
+        keys = primary_key.split(".")
+        if len(keys) == 1:
+            return entry.get(primary_key)
+        else:
+            for key in keys:
+                nested_result = entry.get(key)
+                entry = nested_result
+            return nested_result
+
     def table_restore(self, table_name: str, uri_query: str) -> dict:
         """
         Restore rows to previous states, as recorded in the audit log.
@@ -217,6 +227,7 @@ class GenericBackend(DatabaseBackend):
         only updates and deletes.
 
         """
+        work_done = {"restores": [], "updates": []}
         # ensure we have enough information
         query_parts = uri_query.split("&")
         if not query_parts:
@@ -249,7 +260,7 @@ class GenericBackend(DatabaseBackend):
         uri_query = f"{uri_query}&order=timestamp.asc" # sorted from old to new
         target_data = list(self.table_select(f"{table_name}_audit", uri_query))
         if not target_data:
-            return False # nothing to do
+            return work_done # nothing to do
         tsc = AuditTransaction(self.requestor)
         session_func = self._session_func()
         try:
@@ -259,11 +270,10 @@ class GenericBackend(DatabaseBackend):
         except psycopg2.errors.DuplicateObject as e:
             pass # already exists
         handled = []
-        work_done = {"restores": [], "updates": []}
         with session_func(self.engine) as session:
             for entry in target_data:
                 target_entry = entry.get("previous")
-                pk_value = target_entry.get(primary_key) if target_entry else None
+                pk_value = self._get_pk_value(primary_key, target_entry) if target_entry else None
                 if pk_value in handled or entry.get("event") == "restore":
                     continue
                 target_entry = entry.get("previous")
