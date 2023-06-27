@@ -9,7 +9,7 @@ on:
       - ".github/workflows/tests.yaml"
 
 env:
-  POETRY_VERSION: 1.3.2
+  POETRY_VERSION: 1.5.1
   PYSQURIL_POSTGRES_DB: pysquril_db
   PYSQURIL_POSTGRES_USER: pysquril_user
   PYSQURIL_POSTGRES_PASSWORD: pysquril_password
