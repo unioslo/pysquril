@@ -7,6 +7,8 @@ import re
 from abc import ABC, abstractmethod
 from typing import Optional, Union, Callable
 
+from pysquril.exc import ParseError
+
 class SelectElement(ABC):
     @property
     @abstractmethod
@@ -111,11 +113,11 @@ class SelectTerm(object):
                 if re.match(ElementClass.regex, element):
                     if found:
                         msg = f'Could not uniquely identify {element} - already matched with {found}'
-                        raise Exception(msg)
+                        raise ParseError(msg)
                     element_instance = ElementClass(element)
                     found = ElementClass.name
             if not element_instance:
-                raise Exception(f'Could not parse {element}')
+                raise ParseError(f'Could not parse {element}')
             out.append(element_instance)
         return out
 
@@ -226,10 +228,10 @@ class SetElement(object):
 
     def __init__(self, term: str) -> None:
         self.select_term = SelectTerm(term)
-        type_msg = f'{term} must be an instance of Key'
-        assert isinstance(self.select_term.parsed[0], Key), type_msg
-        len_msg = f'SetElements can only be top level keys - {term} is nested'
-        assert len(self.select_term.parsed) == 1, len_msg
+        if not isinstance(self.select_term.parsed[0], Key):
+            raise ParseError(f'{term} must be an instance of Key')
+        if not len(self.select_term.parsed) == 1:
+            raise ParseError(f'SetElements can only be top level keys - {term} is nested')
 
 
 class SetTerm(object):
