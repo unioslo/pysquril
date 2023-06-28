@@ -298,6 +298,8 @@ class GenericBackend(DatabaseBackend):
                     current_entry = result[0]
                     diff = self._diff_entries(current_entry, target_entry)
                     if diff:
+                        # note: query construction depends on the constraint
+                        # that only top-level keys are allowed in set operations
                         self.table_update(
                             table_name,
                             f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}",
