@@ -498,13 +498,19 @@ class TestSqlBackend(unittest.TestCase):
         some_table = "yay"
         self.backend.table_insert(table_name=some_table, data=some_data)
         self.backend.table_insert(table_name=some_table, data=some_more_data)
+        self.backend.table_update(
+            table_name=some_table,
+            uri_query=f"set=lol&where=pk.id=eq.0",
+            data={"lol": "wat"},
+        )
         self.backend.table_delete(table_name=some_table, uri_query="")
         audit = list(self.backend.table_select(table_name=f"{some_table}_audit", uri_query=""))
-        self.assertTrue(len(audit), 2)
+        self.assertTrue(len(audit), 3)
         nested_result = self.backend.table_restore(
             table_name=some_table, uri_query=f"restore&primary_key=pk.id"
         )
         self.assertEqual(len(nested_result.get("restores")), 2)
+        self.assertEqual(len(nested_result.get("updates")), 0)
         self.backend.table_delete(table_name=f"{some_table}_audit", uri_query="")
 
 
