@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pysquril"
-version = "0.3.4"
+version = "0.3.5"
 description = "Python implementation of structured URI query language"
 repository = "https://github.com/unioslo/pysquril"
 authors = [
