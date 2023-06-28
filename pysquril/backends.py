@@ -277,7 +277,6 @@ class GenericBackend(DatabaseBackend):
                 if pk_value in handled or entry.get("event") == "restore":
                     continue
                 target_entry = entry.get("previous")
-                pk_value = target_entry.get(primary_key)
                 result = list(
                     self.table_select(
                         table_name,
@@ -306,7 +305,7 @@ class GenericBackend(DatabaseBackend):
                             tsc=tsc,
                             session=session,
                         )
-                    work_done["updates"].append(entry)
+                        work_done["updates"].append(entry)
                 handled.append(pk_value)
         return work_done
 
