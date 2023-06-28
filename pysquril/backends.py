@@ -69,7 +69,7 @@ class AuditTransaction(object):
     def _id(self) -> str:
         return str(uuid4())
 
-    def _event(self, diff: Any, previous: Any, event: str) -> dict:
+    def _event(self, diff: Any, previous: Any, event: str, query: str) -> dict:
         return {
             "diff": diff,
             "previous": previous,
@@ -78,16 +78,17 @@ class AuditTransaction(object):
             "identity": self.identity,
             "event_id": self._id(),
             "transaction_id": self.transaction_id,
+            "query": query,
         }
 
-    def event_update(self, *, diff: Any, previous: Any) -> dict:
-        return self._event(diff, previous, "update")
+    def event_update(self, *, diff: Any, previous: Any, query: str) -> dict:
+        return self._event(diff, previous, "update", query)
 
-    def event_delete(self, *, diff: Any, previous: Any) -> dict:
-        return self._event(diff, previous, "delete")
+    def event_delete(self, *, diff: Any, previous: Any, query: str) -> dict:
+        return self._event(diff, previous, "delete", query)
 
-    def event_restore(self, *, diff: Any, previous: Any) -> dict:
-        return self._event(diff, previous, "restore")
+    def event_restore(self, *, diff: Any, previous: Any, query: str) -> dict:
+        return self._event(diff, previous, "restore", query)
 
 
 class DatabaseBackend(ABC):
@@ -290,7 +291,7 @@ class GenericBackend(DatabaseBackend):
                     self.table_insert(table_name, target_entry, session)
                     self.table_insert(
                         f"{table_name}_audit",
-                        tsc.event_restore(diff=target_entry, previous=None),
+                        tsc.event_restore(diff=target_entry, previous=None, query=uri_query),
                         session,
                     )
                     work_done["restores"].append(entry)
@@ -452,7 +453,7 @@ class SqliteBackend(GenericBackend):
         audit_data = []
         tsc = AuditTransaction(self.requestor) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(tsc.event_update(diff=data, previous=val))
+            audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
         if session:
             session.execute(sql.update_query)
@@ -467,7 +468,7 @@ class SqliteBackend(GenericBackend):
         audit_data = []
         tsc = AuditTransaction(self.requestor)
         for row in self.table_select(table_name, uri_query):
-            audit_data.append(tsc.event_delete(diff=None, previous=row))
+            audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
         sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
         with sqlite_session(self.engine) as session:
             session.execute(sql.delete_query)
@@ -640,7 +641,7 @@ class PostgresBackend(GenericBackend):
         audit_data = []
         tsc = AuditTransaction(self.requestor) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(tsc.event_update(diff=data, previous=val))
+            audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
         if session:
             session.execute(sql.update_query)
@@ -655,7 +656,7 @@ class PostgresBackend(GenericBackend):
         audit_data = []
         tsc = AuditTransaction(self.requestor)
         for row in self.table_select(table_name, uri_query):
-            audit_data.append(tsc.event_delete(diff=None, previous=row))
+            audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
         sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
         with postgres_session(self.engine) as session:
             session.execute(sql.delete_query)
