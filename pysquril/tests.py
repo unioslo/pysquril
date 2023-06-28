@@ -426,6 +426,7 @@ class TestSqlBackend(unittest.TestCase):
         self.assertTrue(audit_event["transaction_id"] is not None)
         self.assertTrue(audit_event["event_id"] is not None)
         self.assertTrue(audit_event["timestamp"] is not None)
+        self.assertTrue(audit_event["query"] is not None)
 
         # restore updates
         with self.assertRaises(ParseError): # missing restore directive
