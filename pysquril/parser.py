@@ -231,6 +231,7 @@ class SetElement(object):
         if not isinstance(self.select_term.parsed[0], Key):
             raise ParseError(f'{term} must be an instance of Key')
         if not len(self.select_term.parsed) == 1:
+            # note: relaxing this would require changes to table_restore
             raise ParseError(f'SetElements can only be top level keys - {term} is nested')
 
 
