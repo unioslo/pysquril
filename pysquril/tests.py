@@ -6,6 +6,7 @@ import unittest
 import tempfile
 
 from typing import Callable, Union
+from urllib.parse import quote
 
 import psycopg2
 import psycopg2.errors
@@ -401,10 +402,11 @@ class TestSqlBackend(unittest.TestCase):
 
         # update the table with the new data
         new_data = {key_to_update: original_value+1}
+        message = "all the messages"
 
         self.backend.table_update(
             table_name=test_table,
-            uri_query=f"set={key_to_update}&where={key_to_update}=eq.{original_value}",
+            uri_query=f"set={key_to_update}&where={key_to_update}=eq.{original_value}&message={quote(message)}",
             data=new_data,
         )
         result = list(self.backend.table_select(table_name=test_table, uri_query=""))
@@ -427,6 +429,7 @@ class TestSqlBackend(unittest.TestCase):
         self.assertTrue(audit_event["event_id"] is not None)
         self.assertTrue(audit_event["timestamp"] is not None)
         self.assertTrue(audit_event["query"] is not None)
+        self.assertEqual(audit_event["message"], message)
 
         # restore updates
         with self.assertRaises(ParseError): # missing restore directive
@@ -437,19 +440,32 @@ class TestSqlBackend(unittest.TestCase):
             self.backend.table_restore(table_name=test_table, uri_query="restore&primary_key=")
 
         # restore to a specific state, for a specific row
+        message = "undoing mistakes"
         result = self.backend.table_restore(
             table_name=test_table,
-            uri_query=f"restore&primary_key={pkey}&where=event_id=eq.{audit_event.get('event_id')}"
+            uri_query=f"restore&primary_key={pkey}&where=event_id=eq.{audit_event.get('event_id')}&message={quote(message)}"
         )
         self.assertEqual(len(result.get("updates")), 1)
         self.assertEqual(len(result.get("restores")), 0)
         result = list(self.backend.table_select(table_name=test_table, uri_query="where=id=eq.1"))
         self.assertEqual(result[0].get(key_to_update), original_value)
+        result = list(self.backend.table_select(
+            table_name=f"{test_table}_audit", uri_query="order=timestamp.desc")
+        )
+        self.assertEqual(result[0].get("message"), message)
 
         # delete a specific entry
-        self.backend.table_delete(table_name=test_table, uri_query="where=key3=not.is.null")
+        message = "bad data: must delete, & never repeat (tm)"
+        self.backend.table_delete(
+            table_name=test_table,
+            uri_query=f"where=key3=not.is.null&message={quote(message)}"
+        )
         result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
         self.assertEqual(len(result), 4)
+        result = list(self.backend.table_select(
+            table_name=f"{test_table}_audit", uri_query="order=timestamp.desc")
+        )
+        self.assertEqual(result[0].get("message"), message)
 
         # restore the deleted entry
         result = self.backend.table_restore(
