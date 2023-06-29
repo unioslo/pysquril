@@ -7,6 +7,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Union, ContextManager, Iterable, Optional, Any, Callable
+from urllib.parse import unquote
 from uuid import uuid4
 
 import psycopg2
@@ -57,14 +58,16 @@ class AuditTransaction(object):
     """
     Container for generating audit events.
     Keeps state for transaction IDs, generates
-    timestamps, and event IDs.
+    timestamps, and event IDs, propagates
+    audit messages.
 
     """
 
-    def __init__(self, identity: str) -> None:
+    def __init__(self, identity: str, message: Optional[str] = "") -> None:
         self.identity = identity
         self.timestamp = datetime.datetime.now().isoformat()
         self.transaction_id = self._id()
+        self.message = message
 
     def _id(self) -> str:
         return str(uuid4())
@@ -79,6 +82,7 @@ class AuditTransaction(object):
             "event_id": self._id(),
             "transaction_id": self.transaction_id,
             "query": query,
+            "message": self.message,
         }
 
     def event_update(self, *, diff: Any, previous: Any, query: str) -> dict:
@@ -235,15 +239,15 @@ class GenericBackend(DatabaseBackend):
             raise ParseError("Missing query")
         if "restore" not in query_parts:
             raise ParseError("Missing restore directive")
+        has_pk = False
+        message = ""
         for part in query_parts:
-            has_pk = False
-            if part.startswith("primary_key"):
+            if part.startswith("primary_key="):
                 primary_key = part.split("=")[-1]
-                if primary_key == "":
-                    raise ParseError("Missing primary_key value")
-                else:
+                if primary_key != "":
                     has_pk = True
-                    break
+            if part.startswith("message="):
+                message = unquote(part.split("=")[-1])
         if not has_pk:
             raise ParseError("Missing primary_key")
         # fetch a copy of the current state, and all primay keys
@@ -262,7 +266,7 @@ class GenericBackend(DatabaseBackend):
         target_data = list(self.table_select(f"{table_name}_audit", uri_query))
         if not target_data:
             return work_done # nothing to do
-        tsc = AuditTransaction(self.requestor)
+        tsc = AuditTransaction(self.requestor, message)
         session_func = self._session_func()
         try:
             # ensure the table exists, may have been deleted
@@ -451,10 +455,10 @@ class SqliteBackend(GenericBackend):
         session: Optional[sqlite3.Cursor] = None,
     ) -> bool:
         audit_data = []
-        tsc = AuditTransaction(self.requestor) if not tsc else tsc
+        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
+        tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
-        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
         if session:
             session.execute(sql.update_query)
             self.table_insert(f'{table_name}_audit', audit_data, session)
@@ -466,10 +470,10 @@ class SqliteBackend(GenericBackend):
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
         audit_data = []
-        tsc = AuditTransaction(self.requestor)
+        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
+        tsc = AuditTransaction(self.requestor, sql.message)
         for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
-        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
         with sqlite_session(self.engine) as session:
             session.execute(sql.delete_query)
             if not table_name.endswith("_audit"):
@@ -639,10 +643,10 @@ class PostgresBackend(GenericBackend):
         session: Optional[psycopg2.extensions.cursor] = None,
     ) -> bool:
         audit_data = []
-        tsc = AuditTransaction(self.requestor) if not tsc else tsc
+        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
+        tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
-        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
         if session:
             session.execute(sql.update_query)
             self.table_insert(f'{table_name}_audit', audit_data, session)
@@ -654,10 +658,10 @@ class PostgresBackend(GenericBackend):
 
     def table_delete(self, table_name: str, uri_query: str) -> bool:
         audit_data = []
-        tsc = AuditTransaction(self.requestor)
+        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
+        tsc = AuditTransaction(self.requestor, sql.message)
         for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
-        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
         with postgres_session(self.engine) as session:
             session.execute(sql.delete_query)
             if not table_name.endswith("_audit"):
