@@ -6,6 +6,7 @@ import re
 
 from abc import ABC, abstractmethod
 from typing import Optional, Union, Callable
+from urllib.parse import unquote
 
 from pysquril.exc import ParseError
 
@@ -325,6 +326,15 @@ class UriQuery(object):
         self.order = self.parse_clause(prefix='order=', Cls=OrderClause)
         self.range = self.parse_clause(prefix='range=', Cls=RangeClause)
         self.set = self.parse_clause(prefix='set=', Cls=SetClause)
+        self.message = self.parse_message()
+
+    def parse_message(self) -> str:
+        message = ""
+        parts = self.original.split("&")
+        for part in parts:
+            if part.startswith("message="):
+                message = unquote(part.split("=")[-1])
+        return message
 
     def parse_clause(self, *, prefix: str, Cls: Clause) -> Clause:
         if not prefix:
