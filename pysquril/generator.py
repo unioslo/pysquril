@@ -59,6 +59,7 @@ class SqlGenerator(object):
         self.select_query = self.sql_select()
         self.update_query = self.sql_update()
         self.delete_query = self.sql_delete()
+        self.message = self.uri_message()
 
     # Classes that extend the SqlGenerator must implement the following methods
     # they are called by functions that are mapped over terms in clauses
@@ -320,6 +321,9 @@ class SqlGenerator(object):
         else:
             query = f"delete from {self.table_name} {_where}"
         return query
+
+    def uri_message(self) -> str:
+        return self.parsed_uri_query.message
 
 
 class SqliteQueryGenerator(SqlGenerator):
