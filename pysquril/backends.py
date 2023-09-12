@@ -6,6 +6,7 @@ import sqlite3
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from datetime import timedelta
 from typing import Union, ContextManager, Iterable, Optional, Any, Callable
 from urllib.parse import unquote
 from uuid import uuid4
@@ -107,11 +108,13 @@ class DatabaseBackend(ABC):
         ],
         verbose: bool = False,
         requestor: str = None,
+        backup_days: Optional[int] = None,
     ) -> None:
         super(DatabaseBackend, self).__init__()
         self.engine = engine
         self.verbose = verbose
         self.requestor = requestor
+        self.backup_days = backup_days
 
     @abstractmethod
     def initialise(self) -> Optional[bool]:
@@ -195,6 +198,20 @@ class GenericBackend(DatabaseBackend):
                 nested_result = entry.get(key)
                 entry = nested_result
             return nested_result
+
+    def _audit_source_exists(self, table_name: str) -> bool:
+        """
+        Check if the table from which audit records originate
+        still exists.
+
+        """
+        exists = False
+        try:
+            current_data = list(self.table_select(table_name.replace("_audit", ""), ""))
+            exists = True
+        except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
+            pass
+        return exists
 
     def table_restore(self, table_name: str, uri_query: str) -> dict:
         """
@@ -358,6 +375,7 @@ class SqliteBackend(GenericBackend):
         verbose: bool = False,
         schema: str = None,
         requestor: str = None,
+        backup_days: Optional[int] = None,
     ) -> None:
         self.engine = engine
         self.verbose = verbose
@@ -365,6 +383,7 @@ class SqliteBackend(GenericBackend):
         self.schema = schema if schema else ""
         self.sep = "_" if self.schema else ""
         self.requestor = requestor
+        self.backup_days = backup_days
 
     def _session_func(self) -> Callable:
         return sqlite_session
@@ -495,7 +514,19 @@ class SqliteBackend(GenericBackend):
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
+            backup_cutoff = None
+            if (
+                table_name.endswith("_audit")
+                and not self._audit_source_exists(table_name)
+                and self.backup_days is not None
+            ):
+                backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
+            sql = self.generator_class(
+                f'"{self.schema}{self.sep}{table_name}"',
+                uri_query,
+                data=data,
+                backup_cutoff=backup_cutoff,
+            )
             query = sql.select_query
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
@@ -526,12 +557,14 @@ class PostgresBackend(GenericBackend):
         verbose: bool = False,
         schema: str = None,
         requestor: str = None,
+        backup_days: Optional[int] = None,
     ) -> None:
         self.engine = pool
         self.verbose = verbose
         self.table_definition = '(data jsonb not null, uniq text unique not null)'
         self.schema = schema if schema else 'public'
         self.requestor = requestor
+        self.backup_days = backup_days
 
     def _session_func(self) -> Callable:
         return postgres_session
@@ -683,7 +716,19 @@ class PostgresBackend(GenericBackend):
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
+            backup_cutoff = None
+            if (
+                table_name.endswith("_audit")
+                and not self._audit_source_exists(table_name)
+                and self.backup_days is not None
+            ):
+                backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
+            sql = self.generator_class(
+                f'{self.schema}{self.sep}"{table_name}"',
+                uri_query,
+                data=data,
+                backup_cutoff=backup_cutoff,
+            )
             query = sql.select_query
         with postgres_session(self.engine) as session:
             session.execute(query)
