@@ -1,10 +1,12 @@
 
+import datetime
 import json
 import os
 import sqlite3
 import unittest
 import tempfile
 
+from datetime import timedelta
 from typing import Callable, Union
 from urllib.parse import quote
 
@@ -522,13 +524,65 @@ class TestSqlBackend(unittest.TestCase):
         )
         self.backend.table_delete(table_name=some_table, uri_query="")
         audit = list(self.backend.table_select(table_name=f"{some_table}_audit", uri_query=""))
-        self.assertTrue(len(audit), 3)
+        self.assertEqual(len(audit), 3)
         nested_result = self.backend.table_restore(
             table_name=some_table, uri_query=f"restore&primary_key=pk.id"
         )
         self.assertEqual(len(nested_result.get("restores")), 2)
         self.assertEqual(len(nested_result.get("updates")), 0)
+        self.backend.table_delete(table_name=some_table, uri_query="")
         self.backend.table_delete(table_name=f"{some_table}_audit", uri_query="")
+
+
+        # test backup retention enforcement
+        backup_table = "backedup"
+        self.backend.backup_days = 1
+        self.backend.table_insert(table_name=backup_table, data={"breathe-in": "long", "id": 0})
+        self.backend.table_insert(table_name=backup_table, data={"breathe-out": "long", "id": 1})
+        self.backend.table_delete(table_name=backup_table, uri_query="")
+
+        # within the retention period
+        audit = list(self.backend.table_select(table_name=f"{backup_table}_audit", uri_query=""))
+        self.assertEqual(len(audit), 2)
+        result = self.backend.table_restore(
+            table_name=backup_table, uri_query=f"restore&primary_key=id",
+        )
+        self.assertEqual(len(result.get("restores")), 2)
+        original = list(self.backend.table_select(table_name=backup_table, uri_query=""))
+        self.assertTrue(len(original), 2)
+
+        # cleanup
+        self.backend.table_delete(table_name=backup_table, uri_query="")
+        self.backend.table_delete(table_name=f"{backup_table}_audit", uri_query="")
+
+
+        # outside the retention period
+        not_backup_table = "notbackedup"
+        self.backend.backup_days = 1
+        self.backend.table_insert(table_name=not_backup_table, data={"breathe-in": "short", "id": 0})
+        self.backend.table_insert(table_name=not_backup_table, data={"breathe-out": "short", "id": 1})
+        self.backend.table_delete(table_name=not_backup_table, uri_query="")
+
+        # now adjust the audit timestamps to fall outside the retention period
+        target = (datetime.datetime.now() - timedelta(days=2)).isoformat()
+        if isinstance(self.backend, SqliteBackend):
+            new = json.dumps({"timestamp": target})
+            update_query = f"update {not_backup_table}_audit set data = json_patch(data, '{new}')"
+        elif isinstance(self.backend, PostgresBackend):
+            update_query = f"update {not_backup_table}_audit set data = jsonb_set(data, '{{timestamp}}', '\"{target}\"')"
+        with self.session_func(self.engine) as session:
+            session.execute(update_query)
+
+        # should not be able to view audit or restore data
+        audit = list(self.backend.table_select(table_name=f"{not_backup_table}_audit", uri_query=""))
+        self.assertEqual(len(audit), 0)
+        result = self.backend.table_restore(
+            table_name=not_backup_table, uri_query=f"restore&primary_key=id",
+        )
+        self.assertEqual(len(result.get("restores")), 0)
+
+        # cleanup
+        self.backend.table_delete(table_name=f"{not_backup_table}_audit", uri_query="")
 
 
 class TestSqliteBackend(TestSqlBackend):
@@ -539,6 +593,7 @@ class TestSqliteBackend(TestSqlBackend):
         self.file = f"{__package__}_test.db"
         self.engine = sqlite_init(self.directory, name=self.file)
         self.backend = SqliteBackend(self.engine)
+        self.session_func = sqlite_session
     
     def tearDown(self) -> None:
         self.engine.close()
@@ -559,6 +614,7 @@ class TestPostgresBackend(TestSqlBackend):
         )
         self.backend = PostgresBackend(self.engine)
         self.backend.initialise()
+        self.session_func = postgres_session
 
     def tearDown(self) -> None:
         self.engine.closeall()
