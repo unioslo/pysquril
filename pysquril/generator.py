@@ -234,7 +234,7 @@ class SqlGenerator(object):
         if not backup_cutoff:
             table_reference = self.table_name
         else:
-            table_reference = f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
+            table_reference = self._gen_select_with_retention(backup_cutoff)
         out = self.select_map(self._term_to_sql_select)
         if not out:
             sql_select = f'select * from {table_reference}'
@@ -265,6 +265,9 @@ class SqlGenerator(object):
             return ''
         else:
             return out[0]
+
+    def _gen_select_with_retention(self, backup_cutoff: str) -> str:
+        raise NotImplementedError
 
     # public methods - called by constructor
 
@@ -430,6 +433,9 @@ class SqliteQueryGenerator(SqlGenerator):
         new = json.dumps(self.data)
         return f"set data = json_patch(data, '{new}')"
 
+    def _gen_select_with_retention(self, backup_cutoff: str) -> str:
+        return f"(select * from {self.table_name} where json_extract(data, '$.timestamp') >= '{backup_cutoff}')a"
+
 
 class PostgresQueryGenerator(SqlGenerator):
 
@@ -586,3 +592,6 @@ class PostgresQueryGenerator(SqlGenerator):
             raise ParseError(f'Target key of update: {target} not found in payload')
         val = json.dumps(self.data[target])
         return f" set data = jsonb_set(data, '{{{target}}}', '{val}')"
+
+    def _gen_select_with_retention(self, backup_cutoff: str) -> str:
+        return f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
