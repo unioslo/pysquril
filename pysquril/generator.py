@@ -35,6 +35,7 @@ class SqlGenerator(object):
         table_name: str,
         uri_query: str,
         data: Union[list, dict] = None,
+        backup_cutoff: Optional[str] = None,
     ) -> None:
         self.table_name = table_name
         self.uri_query = uri_query
@@ -56,7 +57,7 @@ class SqlGenerator(object):
         if not self.json_array_sql:
             msg = 'Extending the SqlGenerator requires setting the class level property: json_array_sql'
             raise Exception(msg)
-        self.select_query = self.sql_select()
+        self.select_query = self.sql_select(backup_cutoff)
         self.update_query = self.sql_update()
         self.delete_query = self.sql_delete()
         self.message = self.uri_message()
@@ -229,13 +230,17 @@ class SqlGenerator(object):
 
     # mapper methods - used by public methods
 
-    def _gen_sql_select_clause(self) -> str:
+    def _gen_sql_select_clause(self, backup_cutoff: Optional[str] = None) -> str:
+        if not backup_cutoff:
+            table_reference = self.table_name
+        else:
+            table_reference = f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
         out = self.select_map(self._term_to_sql_select)
         if not out:
-            sql_select = f'select * from {self.table_name}'
+            sql_select = f'select * from {table_reference}'
         else:
             joined = ",".join(out)
-            sql_select = f"select {self.json_array_sql}({joined}) from {self.table_name}"
+            sql_select = f"select {self.json_array_sql}({joined}) from {table_reference}"
         return sql_select
 
     def _gen_sql_where_clause(self) -> str:
@@ -263,8 +268,8 @@ class SqlGenerator(object):
 
     # public methods - called by constructor
 
-    def sql_select(self) -> str:
-        _select = self._gen_sql_select_clause()
+    def sql_select(self, backup_cutoff: Optional[str] = None) -> str:
+        _select = self._gen_sql_select_clause(backup_cutoff)
         _where = self._gen_sql_where_clause()
         _order = self._gen_sql_order_clause()
         _range = self._gen_sql_range_clause()
