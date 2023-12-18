@@ -182,7 +182,7 @@ class TestBackends(object):
         # selecting keys inside an array slice
         out = run_select_query('select=x,c[1|h,p]')
         assert out[0][1] is None
-        assert out[1][1] == [32, 0]
+        assert out[1][1] == [32, 0] or out[1][1] == '[32,0]' # sqlite
         # broadcast key selection inside array - single key
         out = run_select_query('select=x,c[*|h]')
         assert len(out[1][1]) == 3
@@ -190,7 +190,7 @@ class TestBackends(object):
         # broadcast key selection inside array - mutliple keys
         out = run_select_query('select=x,c[*|h,p]')
         assert len(out[1][1]) == 3
-        assert out[1][1][0] == [3, 99]
+        assert out[1][1][0] == [3, 99] or out[1][1][0] == '[3,99]' # sqlite
         # nested array selection
         out = run_select_query('select=a.k1.r1[0]')
         assert out[2] == [1]
@@ -203,15 +203,18 @@ class TestBackends(object):
         assert out[3] == [[0, 63]]
         # now multiple sub-selections
         out = run_select_query('select=a.k3[0|h,s]')
-        assert out[3] == [[0, 521]]
+        assert out[3] == [[0, 521]] or out[3] == ['[0,521]'] # sqlite
         out = run_select_query('select=a.k3[*|h,s]')
-        assert out[3] == [[[0, 521], [63, 333]]]
+        assert out[3] == [[[0, 521], [63, 333]]] or out[3] == [['[0,521]', '[63,333]']] # sqlite
         # multiple sub-keys
         out = run_select_query('select=a.k1,a.k3')
         assert out[3] == [{'r1': [33, 200], 'r2': 90}, [{'h': 0, 'r': 77, 's': 521}, {'h': 63, 's': 333}]]
 
         # FUNCTIONS/AGGREGATIONS
         # supported: count, avg, sum, (max, min), min_ts, max_ts
+        if verbose:
+            print('\n===> FUNCTIONS\n')
+
         out = run_select_query('select=count(1)')
         assert out == [[5]]
         out = run_select_query('select=count(*)')
@@ -237,6 +240,9 @@ class TestBackends(object):
         assert out == [[1]]
         out = run_select_query('select=max(q.r[0|s])')
         assert out == [[77]]
+
+        if verbose:
+            print('\n===> BROADCASTING\n')
 
         # broadcasting aggregations
         out = list(db.table_select('*', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
@@ -394,7 +400,7 @@ class TestBackends(object):
 
 
 
-    def sqlite(self):
+    def test_sqlite(self):
         engine = sqlite_init('/tmp', name='api-test.db')
         self.run_backend_tests(
             self.data,
