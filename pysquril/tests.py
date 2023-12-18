@@ -21,6 +21,7 @@ from termcolor import colored
 from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
 from pysquril.exc import ParseError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
+from pysquril.parser import SelectClause, WhereClause
 from pysquril.test_data import dataset
 
 def sqlite_init(
@@ -39,6 +40,37 @@ def postgres_init(dbconfig: dict) -> psycopg2.pool.SimpleConnectionPool:
         min_conn, max_conn, dsn
     )
     return pool
+
+class TestParser(object):
+
+    def test_select(self) -> None:
+        c = SelectClause("x[*|a,b],y.z")
+        assert len(c.split_clause()) == 2
+
+    def test_where(self) -> None:
+        # TODO: test x=gt.3,or:(y=gt.3,and:z=not.is.null)
+
+        # basic where's
+
+        c = WhereClause("a=eq.b,and:lol=not.is.null")
+        assert len(c.split_clause()) == 2
+        c = WhereClause("a[1|h]=eq.0,or:b[0]=gt.1")
+        assert len(c.split_clause()) == 2
+        c = WhereClause("((x=gt.3,or:y=gt.3),and:z=not.is.null)")
+        assert len(c.split_clause()) == 3
+
+        # quoting values
+
+        c = WhereClause("lol=eq.'.'")
+        assert len(c.split_clause()) == 1
+        where_term = c.parsed[0]
+        where_element = where_term.parsed[0]
+        assert where_element.select_term.bare_term == "lol"
+        assert where_element.op == "eq"
+        assert where_element.val == "."
+
+        c = WhereClause("a=gte.4,and:b=eq.'r,[,],',or:c=neq.0")
+        assert len(c.split_clause()) == 3
 
 
 class TestBackends(object):
@@ -274,6 +306,16 @@ class TestBackends(object):
         assert out[0][0] == 5
         out = run_select_query('select=z&where=float=gt.3.2')
         assert out[0][0] == 1
+        # with quoting
+        out = run_select_query("select=x&where=meh=eq.'.'")
+        assert out[0][0] == 10
+        out = run_select_query("select=x&where=lolly=eq.'()'")
+        assert out[0][0] == 10
+        out = run_select_query("select=x&where=wat=eq.'and:'")
+        assert out[0][0] == 10
+        out = run_select_query("select=x&where=meh2=eq.'()[],and:,or:. where=;'")
+        assert out[0][0] == 107
+
 
         # ORDER
         if verbose:
