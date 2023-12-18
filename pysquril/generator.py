@@ -161,7 +161,6 @@ class SqlGenerator(object):
     def _term_to_sql_select(self, term: SelectTerm) -> str:
         rev = term.parsed.copy()
         rev.reverse()
-        out = []
         first_done = False
         for parsed in rev:
             if isinstance(parsed, Key):
