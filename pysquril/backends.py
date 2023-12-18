@@ -513,7 +513,7 @@ class SqliteBackend(GenericBackend):
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
+            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, array_agg=True)
             queries.append(f"select json_object('{self.schema}{self.sep}{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
@@ -725,7 +725,7 @@ class PostgresBackend(GenericBackend):
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
+            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, array_agg=True)
             queries.append(f"select jsonb_build_object('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
