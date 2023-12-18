@@ -255,6 +255,19 @@ class TestBackends(object):
         out = list(db.table_select('*_table', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
         assert out == [{'another_table': [5]}, {'test_table': [5]}]
 
+        # broadcasting queries without aggregation
+        out = list(db.table_select('*', 'select=x', exclude_endswith = ['_audit', '_metadata']))
+        assert out is not None
+        assert len(out) == 2
+        assert len(out[0].get("another_table")) == 5
+        assert len(out[1].get("test_table")) == 5
+
+        out = list(db.table_select('*', 'select=x,y&where=z=not.is.null', exclude_endswith = ['_audit', '_metadata']))
+        assert out is not None
+        assert len(out) == 2
+        assert len(out[0].get("another_table")) == 4
+        assert len(out[1].get("test_table")) == 4
+
         # WHERE
         if verbose:
             print('\n===> WHERE\n')
