@@ -1,7 +1,7 @@
 
 import json
 
-from typing import Union, Callable, Optional
+from typing import Union, Callable, Optional, Any
 
 from pysquril.exc import ParseError
 from pysquril.parser import (
@@ -36,6 +36,7 @@ class SqlGenerator(object):
         uri_query: str,
         data: Union[list, dict] = None,
         backup_cutoff: Optional[str] = None,
+        array_agg: Optional[bool] = False,
     ) -> None:
         self.table_name = table_name
         self.uri_query = uri_query
@@ -57,7 +58,8 @@ class SqlGenerator(object):
         if not self.json_array_sql:
             msg = 'Extending the SqlGenerator requires setting the class level property: json_array_sql'
             raise Exception(msg)
-        self.select_query = self.sql_select(backup_cutoff)
+        self.has_aggregate_func = False
+        self.select_query = self.sql_select(backup_cutoff, array_agg)
         self.update_query = self.sql_update()
         self.delete_query = self.sql_delete()
         self.message = self.uri_message()
@@ -194,7 +196,7 @@ class SqlGenerator(object):
             if val == 'null' or op == 'in':
                 val = f'{val}'
             else:
-                val = f"'{val}'"
+                val = self._maybe_float(val)
         if op.endswith('.not'):
             op = op.replace('.', ' ')
         elif op.startswith('not.'):
@@ -236,10 +238,10 @@ class SqlGenerator(object):
             table_reference = self._gen_select_with_retention(backup_cutoff)
         out = self.select_map(self._term_to_sql_select)
         if not out:
-            sql_select = f'select * from {table_reference}'
+            sql_select = f'select data from {table_reference}'
         else:
             joined = ",".join(out)
-            sql_select = f"select {self.json_array_sql}({joined}) from {table_reference}"
+            sql_select = f"select {self.json_array_sql}({joined}) data from {table_reference}"
         return sql_select
 
     def _gen_sql_where_clause(self) -> str:
@@ -268,14 +270,24 @@ class SqlGenerator(object):
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         raise NotImplementedError
 
+    def _gen_array_agg(self, query: str) -> str:
+        raise NotImplementedError
+
+    def _maybe_float(self, val) -> Union[str, float]:
+        raise NotImplementedError
+
     # public methods - called by constructor
 
-    def sql_select(self, backup_cutoff: Optional[str] = None) -> str:
+    def sql_select(self, backup_cutoff: Optional[str] = None, array_agg: Optional[bool] = False) -> str:
         _select = self._gen_sql_select_clause(backup_cutoff)
         _where = self._gen_sql_where_clause()
         _order = self._gen_sql_order_clause()
         _range = self._gen_sql_range_clause()
-        return f'{_select} {_where} {_order} {_range}'
+        query = f'{_select} {_where} {_order} {_range}'
+        if array_agg and not self.has_aggregate_func:
+            return self._gen_array_agg(query)
+        else:
+            return query
 
     def sql_update(self) -> str:
         """
@@ -351,6 +363,7 @@ class SqliteQueryGenerator(SqlGenerator):
         else:
             if term.func.endswith('_ts'):
                 term.func = term.func.replace('_ts', '')
+        self.has_aggregate_func = True
         return f"{term.func}({selection})"
 
     def _gen_sql_key_selection(self, term: SelectTerm, parsed: Key) -> str:
@@ -435,6 +448,19 @@ class SqliteQueryGenerator(SqlGenerator):
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         return f"(select * from {self.table_name} where json_extract(data, '$.timestamp') >= '{backup_cutoff}')a"
 
+    def _gen_array_agg(self, query: str) -> str:
+        return f"select json_group_array(data) from ({query})"
+
+    def _maybe_float(self, val: Any) -> Union[str, float]:
+        try:
+            float(val)
+            if str(float(val)) == str(val):
+                return val
+            else:
+                return f"'{val}'"
+        except ValueError:
+            return f"'{val}'"
+
 
 class PostgresQueryGenerator(SqlGenerator):
 
@@ -494,6 +520,7 @@ class PostgresQueryGenerator(SqlGenerator):
                 selection = f"({selection})::int"
             if term.func.endswith('_ts'):
                 term.func = term.func.replace('_ts', '')
+        self.has_aggregate_func = True
         return f"{term.func}({selection})"
 
     def _gen_select_target(self, term_attr: str) -> str:
@@ -594,3 +621,9 @@ class PostgresQueryGenerator(SqlGenerator):
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         return f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
+
+    def _gen_array_agg(self, query: str) -> str:
+        return f"select json_agg(data) from ({query})a"
+
+    def _maybe_float(self, val: Any) -> Union[str, float]:
+        return f"'{val}'"
