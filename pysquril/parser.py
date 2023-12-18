@@ -151,39 +151,62 @@ class WhereElement(object):
 
 class WhereTerm(object):
 
+    combinators = ['and:', 'or:']
+
     def __init__(self, original: str) -> None:
         self.original = original
-        self.parsed = self.parse_elements()
+        self.parsed = self.parse_elements_quoted()
 
-    def parse_elements(self) -> list:
+    def parse_elements_quoted(self) -> list:
         element = self.original
+        temp = ""
         groups = []
-        for char in self.original:
-            if char in ['(', ')']:
-                groups.append(char)
-        element = element.replace('(', '')
-        element = element.replace(')', '')
-        combinators = ['and:', 'or:']
+        # find groups, remove brackets
+        is_quoted = False
+        for token in element:
+            if token == "'":
+                is_quoted = not is_quoted
+            if token in ['(', ')'] and not is_quoted:
+                groups.append(token)
+            else:
+                temp += token
+        element = temp # with groups removed
+        # find and remove logical operators
         combinator = None
-        for c in combinators:
+        for c in self.combinators:
             if element.startswith(c):
                 combinator = c.replace(':', '')
-                element = element.replace(c, '')
-        term, op_and_val = element.split('=')
-        if op_and_val.startswith('not.'):
-            _parts = op_and_val.split('.')
-            if 'is' in _parts:
-                op = '.'.join([_parts[1], _parts[0]])
+                element = element[len(c):]
+        # find term, operator, and value: {term}={op}.{val}
+        term, term_found = "", False
+        op, op_found = "", False
+        val = ""
+        negated_ops = 0
+        for token in element:
+            if not term_found:
+                if token != "=":
+                    term += token
+                else:
+                    term_found = True
             else:
-                op = '.'.join([_parts[0], _parts[1]])
-            val = op_and_val.split('.')[2]
-        else:
-            try:
-                op, val = op_and_val.split('.')
-            except ValueError: # might be a float
-                parts = op_and_val.split('.')
-                op = parts[0]
-                val = float(f"{parts[1]}.{parts[2]}")
+                if not op_found:
+                    if token != ".":
+                        op += token
+                    else:
+                        if op.startswith("not"):
+                            if token == ".":
+                                if negated_ops == 1:
+                                    op_found = True
+                                    continue
+                                negated_ops += 1
+                                op += token
+                        else:
+                            op_found = True
+                else:
+                    if token != "'":
+                        val += token
+        if op == "not.is":
+            op = "is.not"
         return [WhereElement(groups, combinator, term, op, val)]
 
 
@@ -255,26 +278,29 @@ class Clause(object):
         self.parsed = self.parse_terms()
 
     def split_clause(self) -> list:
-        out = []
-        brace_open = False
-        brace_closed = False
-        temp = ''
+        braces_open = False
+        temp = ""
+        parts = []
+        is_quoted = False
         for token in self.original:
-            if token == '[':
-                brace_open = True
-                brace_closed = False
-            if token == ']':
-                brace_open = False
-                brace_closed = True
-            if token == ',' and brace_open and not brace_closed:
-                token = ';'
-            temp += token
-        parts = temp.split(',')
-        for part in parts:
-            if ';' in part:
-                part = part.replace(';', ',')
-            out.append(part)
-        return out
+            if token == "'":
+                is_quoted = not is_quoted
+            if not is_quoted:
+                if token == '[':
+                    braces_open = True
+                if token == ']':
+                    braces_open = False
+            if token == ",":
+                if braces_open or is_quoted:
+                    temp += token
+                else:
+                    parts.append(temp)
+                    temp = ""
+            else:
+                temp += token
+        if temp:
+            parts.append(temp)
+        return parts
 
     def parse_terms(self) -> list:
         out = []
@@ -344,4 +370,4 @@ class UriQuery(object):
         parts = self.original.split('&')
         for part in parts:
             if part.startswith(prefix):
-                return Cls(part.replace(prefix, ''))
+                return Cls(part[len(prefix):])
