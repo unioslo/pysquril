@@ -391,8 +391,18 @@ class SqliteBackend(GenericBackend):
     def initialise(self) -> Optional[bool]:
         pass
 
-    def tables_list(self, exclude_endswith: list = [], only_endswith: Optional[str] = None, remove_pattern: Optional[str] = None) -> list:
-        query = "select name FROM sqlite_master where type = 'table'  order by name asc"
+    def tables_list(
+        self,
+        exclude_endswith: list = [],
+        only_endswith: Optional[str] = None,
+        remove_pattern: Optional[str] = None,
+        table_like: Optional[str] = "",
+    ) -> list:
+        table_like_filter = ""
+        if table_like:
+            pattern = table_like.replace("*", "%")
+            table_like_filter = f"and name like '{pattern}'"
+        query = f"select name FROM sqlite_master where type = 'table' {table_like_filter} order by name asc"
         with sqlite_session(self.engine) as session:
             res = session.execute(query).fetchall()
         if not res:
@@ -508,8 +518,8 @@ class SqliteBackend(GenericBackend):
         return " union all ".join(queries)
 
     def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None, exclude_endswith: list = []) -> Iterable[tuple]:
-        if table_name == "*":
-            tables = self.tables_list(exclude_endswith = exclude_endswith)
+        if "*" in table_name:
+            tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
                 return iter([])
             query = self._union_queries(uri_query, tables)
@@ -578,9 +588,19 @@ class PostgresBackend(GenericBackend):
             pass # throws a tuple concurrently updated when restarting many processes
         return True
 
-    def tables_list(self, exclude_endswith: list = [], only_endswith: Optional[str] = None, remove_pattern: Optional[str] = None) -> list:
+    def tables_list(
+        self,
+        exclude_endswith: list = [],
+        only_endswith: Optional[str] = None,
+        remove_pattern: Optional[str] = None,
+        table_like: Optional[str] = "",
+    ) -> list:
+        table_like_filter = ""
+        if table_like:
+            pattern = table_like.replace("*", "%")
+            table_like_filter = f"and table_name like '{pattern}'"
         query = f"""select table_name from information_schema.tables
-            where table_schema = '{self.schema}' order by table_name asc"""
+            where table_schema = '{self.schema}' {table_like_filter} order by table_name asc"""
         with postgres_session(self.engine) as session:
             session.execute(query)
             res = session.fetchall()
@@ -710,8 +730,8 @@ class PostgresBackend(GenericBackend):
         return " union all ".join(queries)
 
     def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None, exclude_endswith: list = []) -> Iterable[tuple]:
-        if table_name == "*":
-            tables = self.tables_list(exclude_endswith = exclude_endswith)
+        if "*" in table_name:
+            tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
                 return iter([])
             query = self._union_queries(uri_query, tables)

@@ -242,6 +242,13 @@ class TestBackends(object):
         out = list(db.table_select('*', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
         assert out == [{'another_table': [5]}, {'test_table': [5]}]
 
+        # fuzzy matching
+        out = list(db.table_select('another*', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
+        assert out == [{'another_table': [5]}]
+
+        out = list(db.table_select('*_table', 'select=count(1)', exclude_endswith = ['_audit', '_metadata']))
+        assert out == [{'another_table': [5]}, {'test_table': [5]}]
+
         # WHERE
         if verbose:
             print('\n===> WHERE\n')
