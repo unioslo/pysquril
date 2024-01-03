@@ -399,6 +399,15 @@ class TestBackends(object):
         assert len(out) == 1
         assert out[0][0] == 0
         assert out[0][1] == 1
+        # setting to null
+        out = run_update_query(
+            'set=x&where=float=eq.3.1',
+            data={'x': None},
+        )
+        out = run_select_query('select=x,y&where=float=eq.3.1')
+        assert len(out) == 1
+        assert out[0][0] == None
+
 
         # DELETE
         if verbose:
