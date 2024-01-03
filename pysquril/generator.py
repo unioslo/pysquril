@@ -440,7 +440,7 @@ class SqliteQueryGenerator(SqlGenerator):
 
     def _gen_sql_update(self, term: SetTerm) -> str:
         key = term.parsed[0].select_term.bare_term
-        if not self.data or self.data.get(key) is None:
+        if not self.data or key not in self.data.keys():
             raise ParseError(f'Target key of update: {key} not found in payload')
         new = json.dumps(self.data)
         return f"set data = json_patch(data, '{new}')"
@@ -613,11 +613,11 @@ class PostgresQueryGenerator(SqlGenerator):
         return col
 
     def _gen_sql_update(self, term: SetTerm) -> str:
-        target = term.parsed[0].select_term.bare_term
-        if self.data.get(target) is None:
-            raise ParseError(f'Target key of update: {target} not found in payload')
-        val = json.dumps(self.data[target])
-        return f" set data = jsonb_set(data, '{{{target}}}', '{val}')"
+        key = term.parsed[0].select_term.bare_term
+        if not self.data or key not in self.data.keys():
+            raise ParseError(f'Target key of update: {key} not found in payload')
+        val = json.dumps(self.data[key])
+        return f" set data = jsonb_set(data, '{{{key}}}', '{val}')"
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         return f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
