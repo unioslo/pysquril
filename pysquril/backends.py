@@ -478,6 +478,28 @@ class GenericBackend(DatabaseBackend):
             self._define_all_view(table_name)
         return True
 
+    def table_update(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: dict,
+        tsc: Optional[AuditTransaction] = None,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
+        audit_data = []
+        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
+        tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
+        for val in self.table_select(table_name, uri_query, data=data):
+            audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
+        if session:
+            session.execute(sql.update_query)
+            self.table_insert(f'{table_name}_audit', audit_data, session)
+        else:
+            with self._session_func()(self.engine) as session:
+                session.execute(sql.update_query)
+            self.table_insert(f'{table_name}_audit', audit_data)
+        return True
+
 
 class SqliteBackend(GenericBackend):
 
@@ -651,28 +673,6 @@ class SqliteBackend(GenericBackend):
         except Exception as e:
             logging.error('Not sure what went wrong')
             raise e
-
-    def table_update(
-        self,
-        table_name: str,
-        uri_query: str,
-        data: dict,
-        tsc: Optional[AuditTransaction] = None,
-        session: Optional[sqlite3.Cursor] = None,
-    ) -> bool:
-        audit_data = []
-        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
-        tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
-        for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
-        if session:
-            session.execute(sql.update_query)
-            self.table_insert(f'{table_name}_audit', audit_data, session)
-        else:
-            with sqlite_session(self.engine) as session:
-                session.execute(sql.update_query)
-            self.table_insert(f'{table_name}_audit', audit_data)
-        return True
 
     def _yield_results(self, query: str)-> Iterable[tuple]:
         with sqlite_session(self.engine) as session:
@@ -858,28 +858,6 @@ class PostgresBackend(GenericBackend):
         except Exception as e:
             logging.error('Not sure what went wrong')
             raise e
-
-    def table_update(
-        self,
-        table_name: str,
-        uri_query: str,
-        data: dict,
-        tsc: Optional[AuditTransaction] = None,
-        session: Optional[psycopg2.extensions.cursor] = None,
-    ) -> bool:
-        audit_data = []
-        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
-        tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
-        for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
-        if session:
-            session.execute(sql.update_query)
-            self.table_insert(f'{table_name}_audit', audit_data, session)
-        else:
-            with postgres_session(self.engine) as session:
-                session.execute(sql.update_query)
-            self.table_insert(f'{table_name}_audit', audit_data)
-        return True
 
     def _yield_results(self, query: str)-> Iterable[tuple]:
         with postgres_session(self.engine) as session:
