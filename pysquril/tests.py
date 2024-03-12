@@ -662,6 +662,26 @@ class TestSqlBackend(unittest.TestCase):
         self.backend.table_delete(table_name=f"{not_backup_table}_audit", uri_query="")
 
 
+    def test_all_view(self) -> bool:
+        tenant1 = "p11"
+        tenant2 = "p12"
+        tenant3 = "p13"
+        table_name = "A"
+        for idx, tenant in enumerate([tenant1, tenant2, tenant3]):
+            view_backend = self.backend_class(
+                self.engine, schema=tenant, schema_pattern="p"
+            )
+            view_backend.table_insert(
+                table_name,
+                data={"id": idx, "data": f"yes {str(idx)}"},
+                update_all_view=True,
+            )
+        all_backend = self.backend_class(
+            self.engine, schema="all", schema_pattern="p"
+        )
+        result = list(all_backend.table_select(table_name, ""))
+        self.assertEqual(len(result), 3)
+
 class TestSqliteBackend(TestSqlBackend):
     __test__ = True
 
@@ -671,6 +691,7 @@ class TestSqliteBackend(TestSqlBackend):
         self.engine = sqlite_init(self.directory, name=self.file)
         self.backend = SqliteBackend(self.engine)
         self.session_func = sqlite_session
+        self.backend_class = SqliteBackend
     
     def tearDown(self) -> None:
         self.engine.close()
@@ -692,6 +713,7 @@ class TestPostgresBackend(TestSqlBackend):
         self.backend = PostgresBackend(self.engine)
         self.backend.initialise()
         self.session_func = postgres_session
+        self.backend_class = PostgresBackend
 
     def tearDown(self) -> None:
         self.engine.closeall()
