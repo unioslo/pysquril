@@ -15,6 +15,8 @@ dataset = [
         'lol4': {'yeah': '123'},
         'float': 3.1,
         'float_str': '3.2',
+        'self': 'yes',
+        'beneficial': 'yes',
     },
     {
         'y': 11,
@@ -46,6 +48,8 @@ dataset = [
         'lol3': {'yeah': 456},
         'lol4': {'yeah': '456'},
         'float': 4.1,
+        'self': 'no',
+        'beneficial': 'yes',
     },
     {
         'a': {
@@ -62,6 +66,8 @@ dataset = [
         'q': {
             'r': [{'s': 77}],
         },
+        'self': 'yes',
+        'beneficial': 'no',
     },
     {
         'a': {
@@ -79,6 +85,8 @@ dataset = [
             'r': [{'s': 0}],
         },
         'meh2': '()[],and:,or:. where=;',
+        'self': 'no',
+        'beneficial': 'no',
     },
     {
         'x': 10,
@@ -90,5 +98,7 @@ dataset = [
         'lolly': '()',
         'wat': 'and:',
         'quotes_inside': "this is 'quoted'",
+        'self': 'no',
+        'beneficial': 'yes',
     }
 ]
