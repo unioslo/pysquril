@@ -88,6 +88,7 @@ dataset = [
         },
         'meh': '.',
         'lolly': '()',
-        'wat': 'and:'
+        'wat': 'and:',
+        'quotes_inside': "this is 'quoted'",
     }
 ]
