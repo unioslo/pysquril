@@ -106,15 +106,18 @@ class DatabaseBackend(ABC):
             sqlite3.Connection,
             psycopg2.pool.SimpleConnectionPool,
         ],
+        schema: str = None,
         verbose: bool = False,
         requestor: str = None,
         backup_days: Optional[int] = None,
+        schema_pattern: Optional[str] = None,
     ) -> None:
         super(DatabaseBackend, self).__init__()
         self.engine = engine
         self.verbose = verbose
         self.requestor = requestor
         self.backup_days = backup_days
+        self.schema_pattern = schema_pattern
 
     @abstractmethod
     def initialise(self) -> Optional[bool]:
@@ -333,6 +336,73 @@ class GenericBackend(DatabaseBackend):
                 handled.append(pk_value)
         return work_done
 
+    def _tables_in_schemas(self, table_name: str) -> list:
+        """
+        Return a list of all existing instances of the {table_name}
+        across all schemas, including the schema name: {schema}.{table_name}.
+
+        """
+        raise NotImplementedError
+
+    def _create_all_view(
+        self,
+        view_name: str,
+        unions: str,
+        session: Union[sqlite3.Cursor, psycopg2.extensions.cursor],
+    ) -> None:
+        """
+        Backend specific implementation of view creation.
+
+        """
+        raise NotImplementedError
+
+    def _fqtn(self, table_name: str, schema_names: Optional[str] = None) -> str:
+        """
+        Return a fully qualified table name - qualified with the schema.
+
+        """
+        raise NotImplementedError
+
+    def _define_all_view(self, table_name: str) -> None:
+        """
+        To allow queries across all schemas, for a given table.
+
+        The method is optionally called as part of table_insert,
+        and table_delete - when a new table is created, and when
+        an existing table is deleted.
+
+        It works like this: suppose there are no tables at all.
+        The first insert is done into table p11.A, and
+        _define_all_view(A) is called. This creates a view named
+        all.A - a view defined in the schema named 'all', with
+        the name of the table which is being created. The view
+        returns all data from tables named A in all schemas. At present
+        it would be: create or replace view all.A as select * from p11.A;.
+
+        Now the first insert is done into a new table in another schema ->
+        _define_all_view(pA) is called. Now the view called
+        all.A is updated to be the union of p11.A and p12.A:
+        create or replace view all.A as select * from p11.A
+        union all select * from p12.A;.
+
+        Upon deletion of table p12.A, the view definition is
+        updated to remove the reference to the deleted table.
+
+        With the view in place, a caller can do table_select(all.{table_name})
+        to query a given table across all schemas.
+
+        """
+        tables = self._tables_in_schemas(table_name)
+        if not tables:
+            return # when the last one is deleted
+        unions = " union all ".join(
+            [f"select * from {t}" for t in tables]
+        )
+        view_name = self._fqtn(table_name, schema_name="all")
+        session_func = self._session_func()
+        with session_func(self.engine) as session:
+            self._create_all_view(view_name, unions, session)
+
 
 class SqliteBackend(GenericBackend):
 
@@ -376,6 +446,7 @@ class SqliteBackend(GenericBackend):
         schema: str = None,
         requestor: str = None,
         backup_days: Optional[int] = None,
+        schema_pattern: Optional[str] = None,
     ) -> None:
         self.engine = engine
         self.verbose = verbose
@@ -384,9 +455,36 @@ class SqliteBackend(GenericBackend):
         self.sep = "_" if self.schema else ""
         self.requestor = requestor
         self.backup_days = backup_days
+        self.schema_pattern = schema_pattern
 
     def _session_func(self) -> Callable:
         return sqlite_session
+
+    def _fqtn(self, table_name: str, schema_name: Optional[str] = None) -> str:
+        """
+        Return a fully qualified table name - qualified with the schema.
+
+        """
+        schema = schema_name or self.schema
+        return f"{schema}{self.sep}{table_name}"
+
+    def _tables_in_schemas(self, table_name: str) -> list:
+        """
+        Return a list of all existing instances of the {table_name}
+        across all schemas, including the schema name: {schema}.{table_name}.
+
+        """
+        with sqlite_session(self.engine) as session:
+            res = session.execute(
+                f"""select name FROM sqlite_master where type = 'table'
+                    and name like '{self.schema_pattern}%{table_name}'
+                """
+            ).fetchall()
+        return [ r[0] for r in res ] if res else []
+
+    def _create_all_view(self, view_name: str, unions: str, session: sqlite3.Cursor) -> None:
+        session.execute(f'drop view if exists {view_name}')
+        session.execute(f'create view "{view_name}" as {unions}')
 
     def initialise(self) -> Optional[bool]:
         pass
@@ -428,7 +526,7 @@ class SqliteBackend(GenericBackend):
         table_name: str,
         session: sqlite3.Cursor,
     ) -> bool:
-        session.execute(f'create table if not exists "{self.schema}{self.sep}{table_name}" {self.table_definition}')
+        session.execute(f'create table if not exists "{self._fqtn(table_name)}" {self.table_definition}')
         return True
 
     def table_insert(
@@ -436,10 +534,11 @@ class SqliteBackend(GenericBackend):
         table_name: str,
         data: Union[dict, list],
         session: Optional[sqlite3.Cursor] = None,
+        update_all_view: Optional[bool] = False,
     ) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into "{self.schema}{self.sep}{table_name}" (data) values (?)'
+            insert_stmt = f'insert into "{self._fqtn(table_name)}" (data) values (?)'
             target = []
             if dtype is list:
                 for element in data:
@@ -461,6 +560,8 @@ class SqliteBackend(GenericBackend):
                     with sqlite_session(self.engine) as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
+                    if update_all_view:
+                        self._define_all_view(table_name)
                     return True
         except sqlite3.IntegrityError as e:
             logging.info('Ignoring duplicate row')
@@ -484,7 +585,7 @@ class SqliteBackend(GenericBackend):
         session: Optional[sqlite3.Cursor] = None,
     ) -> bool:
         audit_data = []
-        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, data=data)
+        sql = self.generator_class(f'"{self._fqtn(table_name)}"', uri_query, data=data)
         tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
@@ -497,9 +598,14 @@ class SqliteBackend(GenericBackend):
             self.table_insert(f'{table_name}_audit', audit_data)
         return True
 
-    def table_delete(self, table_name: str, uri_query: str) -> bool:
+    def table_delete(
+        self,
+        table_name: str,
+        uri_query: str,
+        update_all_view: Optional[bool] = False,
+    ) -> bool:
         audit_data = []
-        sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query)
+        sql = self.generator_class(f'"{self._fqtn(table_name)}"', uri_query)
         tsc = AuditTransaction(self.requestor, sql.message)
         for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
@@ -508,12 +614,14 @@ class SqliteBackend(GenericBackend):
             if not table_name.endswith("_audit"):
                 self.table_create(f'{table_name}_audit', session)
                 self.table_insert(f'{table_name}_audit', audit_data, session)
+        if update_all_view:
+            self._define_all_view(table_name)
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'"{self.schema}{self.sep}{table_name}"', uri_query, array_agg=True)
+            sql = self.generator_class(f'"{self._fqtn(table_name)}"', uri_query, array_agg=True)
             queries.append(f"select json_object('{self.schema}{self.sep}{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
@@ -532,7 +640,7 @@ class SqliteBackend(GenericBackend):
             ):
                 backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
             sql = self.generator_class(
-                f'"{self.schema}{self.sep}{table_name}"',
+                f'"{self._fqtn(table_name)}"',
                 uri_query,
                 data=data,
                 backup_cutoff=backup_cutoff,
@@ -568,6 +676,7 @@ class PostgresBackend(GenericBackend):
         schema: str = None,
         requestor: str = None,
         backup_days: Optional[int] = None,
+        schema_pattern: Optional[str] = None,
     ) -> None:
         self.engine = pool
         self.verbose = verbose
@@ -575,9 +684,39 @@ class PostgresBackend(GenericBackend):
         self.schema = schema if schema else 'public'
         self.requestor = requestor
         self.backup_days = backup_days
+        self.schema_pattern = schema_pattern
 
     def _session_func(self) -> Callable:
         return postgres_session
+
+    def _fqtn(self, table_name: str, schema_name: Optional[str] = None) -> str:
+        """
+        Return a fully qualified table name - qualified with the schema.
+
+        """
+        schema = schema_name or self.schema
+        schema = '"all"' if schema == "all" else schema # all is a reserved word
+        return f'{schema}{self.sep}"{table_name}"'
+
+    def _tables_in_schemas(self, table_name: str) -> list:
+        """
+        Return a list of all existing instances of the {table_name}
+        across all schemas, including the schema name: {schema}.{table_name}.
+
+        """
+        with postgres_session(self.engine) as session:
+            session.execute(
+                f"""select concat_ws('.', table_schema, concat('"', table_name, '"'))
+                    from information_schema.tables where table_schema
+                    like '{self.schema_pattern}%' and table_name = '{table_name}'
+                """
+            )
+            res = session.fetchall()
+        return [ r[0] for r in res ] if res else []
+
+    def _create_all_view(self, view_name: str, unions: str, session: psycopg2.extensions.cursor) -> None:
+        session.execute(f'create schema if not exists "all"')
+        session.execute(f"create or replace view {view_name} as {unions}")
 
     def initialise(self) -> Optional[bool]:
         try:
@@ -627,7 +766,7 @@ class PostgresBackend(GenericBackend):
         table_name: str,
         session: psycopg2.extensions.cursor,
     ) -> bool:
-        table_create = f'create table if not exists {self.schema}{self.sep}"{table_name}"{self.table_definition}'
+        table_create = f'create table if not exists {self._fqtn(table_name)}{self.table_definition}'
         trigger_create = f"""
             create trigger ensure_unique_data before insert
             on {self.schema}{self.sep}"{table_name}"
@@ -648,10 +787,11 @@ class PostgresBackend(GenericBackend):
         table_name: str,
         data: Union[dict, list],
         session: Optional[psycopg2.extensions.cursor] = None,
+        update_all_view: Optional[bool] = False,
     ) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into {self.schema}{self.sep}"{table_name}" (data) values (%s)'
+            insert_stmt = f'insert into {self._fqtn(table_name)} (data) values (%s)'
             target = []
             if dtype is list:
                 for element in data:
@@ -673,6 +813,8 @@ class PostgresBackend(GenericBackend):
                     with postgres_session(self.engine) as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
+                    if update_all_view:
+                        self._define_all_view(table_name)
                     return True
         except psycopg2.IntegrityError as e:
             logging.info('Ignoring duplicate row')
@@ -696,7 +838,7 @@ class PostgresBackend(GenericBackend):
         session: Optional[psycopg2.extensions.cursor] = None,
     ) -> bool:
         audit_data = []
-        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, data=data)
+        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
         tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
@@ -709,9 +851,14 @@ class PostgresBackend(GenericBackend):
             self.table_insert(f'{table_name}_audit', audit_data)
         return True
 
-    def table_delete(self, table_name: str, uri_query: str) -> bool:
+    def table_delete(
+        self,
+        table_name: str,
+        uri_query: str,
+        update_all_view: Optional[bool] = False,
+    ) -> bool:
         audit_data = []
-        sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query)
+        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
         tsc = AuditTransaction(self.requestor, sql.message)
         for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
@@ -720,12 +867,14 @@ class PostgresBackend(GenericBackend):
             if not table_name.endswith("_audit"):
                 self.table_create(f'{table_name}_audit', session)
                 self.table_insert(f'{table_name}_audit', audit_data, session)
+        if update_all_view:
+            self._define_all_view(table_name)
         return True
 
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'{self.schema}{self.sep}"{table_name}"', uri_query, array_agg=True)
+            sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
             queries.append(f"select jsonb_build_object('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
@@ -744,7 +893,7 @@ class PostgresBackend(GenericBackend):
             ):
                 backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
             sql = self.generator_class(
-                f'{self.schema}{self.sep}"{table_name}"',
+                f'{self._fqtn(table_name)}',
                 uri_query,
                 data=data,
                 backup_cutoff=backup_cutoff,
