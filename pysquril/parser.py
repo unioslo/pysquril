@@ -83,6 +83,15 @@ class SelectTerm(object):
         'count', 'avg', 'sum', 'min', 'max', 'min_ts', 'max_ts',
     ]
 
+    element_classes = [
+        Key,
+        ArraySpecific,
+        ArraySpecificSingle,
+        ArraySpecificMultiple,
+        ArrayBroadcastSingle,
+        ArrayBroadcastMultiple
+    ]
+
     def __init__(self, original: str) -> None:
         self.func, self.original = self.strip_function(original)
         self.bare_term = self.original.split('[')[0]
@@ -103,14 +112,7 @@ class SelectTerm(object):
         for element in parts:
             element_instance = None
             found = False
-            for ElementClass in [
-                Key,
-                ArraySpecific,
-                ArraySpecificSingle,
-                ArraySpecificMultiple,
-                ArrayBroadcastSingle,
-                ArrayBroadcastMultiple
-            ]:
+            for ElementClass in self.element_classes:
                 if re.match(ElementClass.regex, element):
                     if found:
                         msg = f'Could not uniquely identify {element} - already matched with {found}'
@@ -121,6 +123,22 @@ class SelectTerm(object):
                 raise ParseError(f'Could not parse {element}')
             out.append(element_instance)
         return out
+
+
+class GroupByTerm(SelectTerm):
+
+    element_classes = [
+        Key,
+        ArraySpecific,
+        ArraySpecificSingle,
+    ]
+
+    def strip_function(self, term: str) -> tuple:
+        func = None
+        for sf in self.supported_functions:
+            if term.startswith(f"{sf}("):
+                raise ParseError("group_by keys cannot contain fuctions")
+        return func, term
 
 
 class WhereElement(object):
@@ -325,6 +343,8 @@ class RangeClause(Clause):
 class SetClause(Clause):
     term_class = SetTerm
 
+class GroupByClause(Clause):
+    term_class = SelectTerm
 
 class UriQuery(object):
 
