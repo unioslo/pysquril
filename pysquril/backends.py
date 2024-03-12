@@ -466,7 +466,7 @@ class SqliteBackend(GenericBackend):
 
         """
         schema = schema_name or self.schema
-        return f"{schema}{self.sep}{table_name}"
+        return f'"{schema}{self.sep}{table_name}"'
 
     def _tables_in_schemas(self, table_name: str) -> list:
         """
@@ -484,7 +484,7 @@ class SqliteBackend(GenericBackend):
 
     def _create_all_view(self, view_name: str, unions: str, session: sqlite3.Cursor) -> None:
         session.execute(f'drop view if exists {view_name}')
-        session.execute(f'create view "{view_name}" as {unions}')
+        session.execute(f'create view {view_name} as {unions}')
 
     def initialise(self) -> Optional[bool]:
         pass
@@ -526,7 +526,7 @@ class SqliteBackend(GenericBackend):
         table_name: str,
         session: sqlite3.Cursor,
     ) -> bool:
-        session.execute(f'create table if not exists "{self._fqtn(table_name)}" {self.table_definition}')
+        session.execute(f'create table if not exists {self._fqtn(table_name)} {self.table_definition}')
         return True
 
     def table_insert(
@@ -538,7 +538,7 @@ class SqliteBackend(GenericBackend):
     ) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into "{self._fqtn(table_name)}" (data) values (?)'
+            insert_stmt = f'insert into {self._fqtn(table_name)} (data) values (?)'
             target = []
             if dtype is list:
                 for element in data:
@@ -585,7 +585,7 @@ class SqliteBackend(GenericBackend):
         session: Optional[sqlite3.Cursor] = None,
     ) -> bool:
         audit_data = []
-        sql = self.generator_class(f'"{self._fqtn(table_name)}"', uri_query, data=data)
+        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
         tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
@@ -605,7 +605,7 @@ class SqliteBackend(GenericBackend):
         update_all_view: Optional[bool] = False,
     ) -> bool:
         audit_data = []
-        sql = self.generator_class(f'"{self._fqtn(table_name)}"', uri_query)
+        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
         tsc = AuditTransaction(self.requestor, sql.message)
         for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
@@ -621,7 +621,7 @@ class SqliteBackend(GenericBackend):
     def _union_queries(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'"{self._fqtn(table_name)}"', uri_query, array_agg=True)
+            sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
             queries.append(f"select json_object('{self.schema}{self.sep}{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
@@ -646,7 +646,7 @@ class SqliteBackend(GenericBackend):
             ):
                 backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
             sql = self.generator_class(
-                f'"{self._fqtn(table_name)}"',
+                f'{self._fqtn(table_name)}',
                 uri_query,
                 data=data,
                 backup_cutoff=backup_cutoff,
