@@ -21,7 +21,7 @@ from termcolor import colored
 from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
 from pysquril.exc import ParseError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
-from pysquril.parser import SelectClause, WhereClause
+from pysquril.parser import SelectClause, WhereClause, GroupByTerm, GroupByClause
 from pysquril.test_data import dataset
 
 def sqlite_init(
@@ -71,6 +71,27 @@ class TestParser(object):
 
         c = WhereClause("a=gte.4,and:b=eq.'r,[,],',or:c=neq.0")
         assert len(c.split_clause()) == 3
+
+
+    def test_group_by(self) -> None:
+
+        with pytest.raises(ParseError):
+            GroupByTerm("max(key)")
+
+        with pytest.raises(ParseError):
+            GroupByTerm("a[1|b,c]")
+
+        with pytest.raises(ParseError):
+            GroupByTerm("a[*|b]")
+
+        with pytest.raises(ParseError):
+            GroupByTerm("a[*|b,c]")
+
+        c = GroupByClause("a,b")
+        assert len(c.split_clause()) == 2
+
+        c = GroupByClause("a.b.c,d")
+        assert len(c.split_clause()) == 2
 
 
 class TestBackends(object):
@@ -373,6 +394,15 @@ class TestBackends(object):
         assert out == [[1900], [107]]
         out = run_select_query('select=x&where=x=not.is.null&order=x.desc&range=1.2')
         assert out == [[107], [88]]
+
+        # GROUP BY
+        if verbose:
+            print('\n===> GROUP BY\n')
+        #out = run_select_query('select=self,count(*)&group_by=self')
+        #assert len(out) == 2
+        #out = run_select_query('select=self,beneficial,count(*)&group_by=self,beneficial')
+        #assert len(out) == 5
+        # check errors too
 
         # UPDATE
         if verbose:
