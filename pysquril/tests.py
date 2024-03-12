@@ -398,11 +398,13 @@ class TestBackends(object):
         # GROUP BY
         if verbose:
             print('\n===> GROUP BY\n')
-        #out = run_select_query('select=self,count(*)&group_by=self')
-        #assert len(out) == 2
-        #out = run_select_query('select=self,beneficial,count(*)&group_by=self,beneficial')
-        #assert len(out) == 5
-        # check errors too
+        out = run_select_query('select=self,count(*)&group_by=self')
+        assert len(out) == 2
+        out = run_select_query('select=self,beneficial,count(*)&group_by=self,beneficial')
+        assert len(out) == 4
+
+        with pytest.raises(ParseError):
+            run_select_query('select=self,x,count(*)&group_by=self,x&order=x.desc')
 
         # UPDATE
         if verbose:
