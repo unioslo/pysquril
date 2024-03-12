@@ -439,6 +439,25 @@ class GenericBackend(DatabaseBackend):
             queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
+    def _yield_results(self, query: str)-> Iterable[tuple]:
+        raise NotImplementedError
+
+    def table_select(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: Optional[Union[dict, list]] = None,
+        exclude_endswith: list = [],
+    ) -> Iterable[tuple]:
+        if "*" in table_name:
+            tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
+            if not tables:
+                return iter([])
+            query = self._query_for_select_many(uri_query, tables)
+        else:
+            query = self._query_for_select(table_name, uri_query, data)
+        return self._yield_results(query)
+
 
 class SqliteBackend(GenericBackend):
 
@@ -655,20 +674,7 @@ class SqliteBackend(GenericBackend):
             self._define_all_view(table_name)
         return True
 
-    def table_select(
-        self,
-        table_name: str,
-        uri_query: str,
-        data: Optional[Union[dict, list]] = None,
-        exclude_endswith: list = [],
-    ) -> Iterable[tuple]:
-        if "*" in table_name:
-            tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
-            if not tables:
-                return iter([])
-            query = self._query_for_select_many(uri_query, tables)
-        else:
-            query = self._query_for_select(table_name, uri_query, data)
+    def _yield_results(self, query: str)-> Iterable[tuple]:
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
                 yield json.loads(row[0])
@@ -895,20 +901,7 @@ class PostgresBackend(GenericBackend):
             self._define_all_view(table_name)
         return True
 
-    def table_select(
-        self,
-        table_name: str,
-        uri_query: str,
-        data: Optional[Union[dict, list]] = None,
-        exclude_endswith: list = [],
-    ) -> Iterable[tuple]:
-        if "*" in table_name:
-            tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
-            if not tables:
-                return iter([])
-            query = self._query_for_select_many(uri_query, tables)
-        else:
-            query = self._query_for_select(table_name, uri_query, data)
+    def _yield_results(self, query: str)-> Iterable[tuple]:
         with postgres_session(self.engine) as session:
             session.execute(query)
             for row in session:
