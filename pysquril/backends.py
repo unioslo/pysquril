@@ -379,8 +379,8 @@ class GenericBackend(DatabaseBackend):
         returns all data from tables named A in all schemas. At present
         it would be: create or replace view all.A as select * from p11.A;.
 
-        Now the first insert is done into a new table in another schema ->
-        _define_all_view(pA) is called. Now the view called
+        Now the first insert is done into a new table in another schema p12 ->
+        _define_all_view(A) is called. Now the view called
         all.A is updated to be the union of p11.A and p12.A:
         create or replace view all.A as select * from p11.A
         union all select * from p12.A;.
