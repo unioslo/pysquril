@@ -432,6 +432,13 @@ class GenericBackend(DatabaseBackend):
         )
         return sql.select_query
 
+    def _union_queries(self, uri_query: str, tables: list) -> str:
+        queries = []
+        for table_name in tables:
+            sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
+            queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
+        return " union all ".join(queries)
+
 
 class SqliteBackend(GenericBackend):
 
@@ -648,12 +655,7 @@ class SqliteBackend(GenericBackend):
             self._define_all_view(table_name)
         return True
 
-    def _union_queries(self, uri_query: str, tables: list) -> str:
-        queries = []
-        for table_name in tables:
-            sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
-            queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
-        return " union all ".join(queries)
+
 
     def table_select(
         self,
@@ -894,13 +896,6 @@ class PostgresBackend(GenericBackend):
         if update_all_view:
             self._define_all_view(table_name)
         return True
-
-    def _union_queries(self, uri_query: str, tables: list) -> str:
-        queries = []
-        for table_name in tables:
-            sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
-            queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
-        return " union all ".join(queries)
 
     def table_select(
         self,
