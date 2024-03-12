@@ -7,7 +7,7 @@ Python implementation of structured URI query language.
 
 ```bash
 poetry install
-poetry run pytest pysquril/tests.py
+poetry run pytest -vs --durations=0 pysquril/tests.py
 ```
 
 ## License
