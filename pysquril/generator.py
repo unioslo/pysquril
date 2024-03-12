@@ -154,6 +154,10 @@ class SqlGenerator(object):
         return self._clause_map_terms(self.parsed_uri_query.set, map_func) \
             if self.parsed_uri_query.set else None
 
+    def group_by_map(self, map_func: Callable) -> Optional[list]:
+        return self._clause_map_terms(self.parsed_uri_query.group_by, map_func) \
+            if self.parsed_uri_query.group_by else None
+
     # term handler functions
     # mapped over terms in a clause
     # generates SQL for each term
@@ -267,6 +271,14 @@ class SqlGenerator(object):
         else:
             return out[0]
 
+    def _gen_sql_group_by_clause(self) -> str:
+        out = self.group_by_map(self._term_to_sql_select)
+        if not out:
+            return ''
+        else:
+            cols = ",".join(out)
+            return f"group by {cols}"
+
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         raise NotImplementedError
 
@@ -283,7 +295,8 @@ class SqlGenerator(object):
         _where = self._gen_sql_where_clause()
         _order = self._gen_sql_order_clause()
         _range = self._gen_sql_range_clause()
-        query = f'{_select} {_where} {_order} {_range}'
+        _group_by = self._gen_sql_group_by_clause()
+        query = f'{_select} {_where} {_order} {_group_by} {_range}'
         if array_agg and not self.has_aggregate_func:
             return self._gen_array_agg(query)
         else:
