@@ -458,6 +458,26 @@ class GenericBackend(DatabaseBackend):
             query = self._query_for_select(table_name, uri_query, data)
         return self._yield_results(query)
 
+    def table_delete(
+        self,
+        table_name: str,
+        uri_query: str,
+        update_all_view: Optional[bool] = False,
+    ) -> bool:
+        audit_data = []
+        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
+        tsc = AuditTransaction(self.requestor, sql.message)
+        for row in self.table_select(table_name, uri_query):
+            audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
+        with self._session_func()(self.engine) as session:
+            session.execute(sql.delete_query)
+            if not table_name.endswith("_audit"):
+                self.table_create(f'{table_name}_audit', session)
+                self.table_insert(f'{table_name}_audit', audit_data, session)
+        if update_all_view:
+            self._define_all_view(table_name)
+        return True
+
 
 class SqliteBackend(GenericBackend):
 
@@ -652,26 +672,6 @@ class SqliteBackend(GenericBackend):
             with sqlite_session(self.engine) as session:
                 session.execute(sql.update_query)
             self.table_insert(f'{table_name}_audit', audit_data)
-        return True
-
-    def table_delete(
-        self,
-        table_name: str,
-        uri_query: str,
-        update_all_view: Optional[bool] = False,
-    ) -> bool:
-        audit_data = []
-        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
-        tsc = AuditTransaction(self.requestor, sql.message)
-        for row in self.table_select(table_name, uri_query):
-            audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
-        with sqlite_session(self.engine) as session:
-            session.execute(sql.delete_query)
-            if not table_name.endswith("_audit"):
-                self.table_create(f'{table_name}_audit', session)
-                self.table_insert(f'{table_name}_audit', audit_data, session)
-        if update_all_view:
-            self._define_all_view(table_name)
         return True
 
     def _yield_results(self, query: str)-> Iterable[tuple]:
@@ -879,26 +879,6 @@ class PostgresBackend(GenericBackend):
             with postgres_session(self.engine) as session:
                 session.execute(sql.update_query)
             self.table_insert(f'{table_name}_audit', audit_data)
-        return True
-
-    def table_delete(
-        self,
-        table_name: str,
-        uri_query: str,
-        update_all_view: Optional[bool] = False,
-    ) -> bool:
-        audit_data = []
-        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
-        tsc = AuditTransaction(self.requestor, sql.message)
-        for row in self.table_select(table_name, uri_query):
-            audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
-        with postgres_session(self.engine) as session:
-            session.execute(sql.delete_query)
-            if not table_name.endswith("_audit"):
-                self.table_create(f'{table_name}_audit', session)
-                self.table_insert(f'{table_name}_audit', audit_data, session)
-        if update_all_view:
-            self._define_all_view(table_name)
         return True
 
     def _yield_results(self, query: str)-> Iterable[tuple]:
