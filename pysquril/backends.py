@@ -432,7 +432,7 @@ class GenericBackend(DatabaseBackend):
         )
         return sql.select_query
 
-    def _union_queries(self, uri_query: str, tables: list) -> str:
+    def _query_for_select_many(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
             sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
@@ -655,8 +655,6 @@ class SqliteBackend(GenericBackend):
             self._define_all_view(table_name)
         return True
 
-
-
     def table_select(
         self,
         table_name: str,
@@ -668,7 +666,7 @@ class SqliteBackend(GenericBackend):
             tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
                 return iter([])
-            query = self._union_queries(uri_query, tables)
+            query = self._query_for_select_many(uri_query, tables)
         else:
             query = self._query_for_select(table_name, uri_query, data)
         with sqlite_session(self.engine) as session:
@@ -908,7 +906,7 @@ class PostgresBackend(GenericBackend):
             tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
                 return iter([])
-            query = self._union_queries(uri_query, tables)
+            query = self._query_for_select_many(uri_query, tables)
         else:
             query = self._query_for_select(table_name, uri_query, data)
         with postgres_session(self.engine) as session:
