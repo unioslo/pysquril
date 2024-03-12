@@ -372,7 +372,10 @@ class UriQuery(object):
         self.order = self.parse_clause(prefix='order=', Cls=OrderClause)
         self.range = self.parse_clause(prefix='range=', Cls=RangeClause)
         self.set = self.parse_clause(prefix='set=', Cls=SetClause)
+        self.group_by = self.parse_clause(prefix='group_by=', Cls=GroupByClause)
         self.message = self.parse_message()
+        if self.group_by and self.order:
+            raise ParseError("ordering not supported for group_by")
 
     def parse_message(self) -> str:
         message = ""
