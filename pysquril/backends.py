@@ -449,6 +449,17 @@ class GenericBackend(DatabaseBackend):
         data: Optional[Union[dict, list]] = None,
         exclude_endswith: list = [],
     ) -> Iterable[tuple]:
+        """
+        Yield a resulset associated with a table_name, and a uri_query.
+
+        The table_name can be either a reference to a specific table, or an
+        asterisk expression intended to match a set of table names. In the
+        latter case, a query is constructed to union the resulsets from
+        all the relevant tables together.
+
+        Optionally exclude tables that end with a specific pattern.
+
+        """
         if "*" in table_name:
             tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
@@ -464,6 +475,12 @@ class GenericBackend(DatabaseBackend):
         uri_query: str,
         update_all_view: Optional[bool] = False,
     ) -> bool:
+        """
+        Delete the intended data from the table if a uri_query
+        is present, otherwise drop the table. All deletions
+        are recorded in the audit log.
+
+        """
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
         tsc = AuditTransaction(self.requestor, sql.message)
@@ -486,6 +503,10 @@ class GenericBackend(DatabaseBackend):
         tsc: Optional[AuditTransaction] = None,
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> bool:
+        """
+        Update one or more keys, recording changes in the audit log.
+
+        """
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
         tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
