@@ -99,6 +99,8 @@ class AuditTransaction(object):
 class DatabaseBackend(ABC):
 
     sep: str # schema separator character
+    generator_class: Union[SqliteQueryGenerator, PostgresQueryGenerator]
+    json_object_func: str
 
     def __init__(
         self,
@@ -438,6 +440,7 @@ class SqliteBackend(GenericBackend):
     """
 
     generator_class = SqliteQueryGenerator
+    json_object_func = 'json_object'
 
     def __init__(
         self,
@@ -622,7 +625,7 @@ class SqliteBackend(GenericBackend):
         queries = []
         for table_name in tables:
             sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
-            queries.append(f"select json_object('{self.schema}{self.sep}{table_name}', ({sql.select_query}))")
+            queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
     def table_select(
@@ -674,6 +677,7 @@ class PostgresBackend(GenericBackend):
 
     generator_class = PostgresQueryGenerator
     sep = "."
+    json_object_func = 'jsonb_build_object'
 
     def __init__(
         self,
@@ -881,7 +885,7 @@ class PostgresBackend(GenericBackend):
         queries = []
         for table_name in tables:
             sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
-            queries.append(f"select jsonb_build_object('{table_name}', ({sql.select_query}))")
+            queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
     def table_select(
