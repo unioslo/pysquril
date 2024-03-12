@@ -405,6 +405,33 @@ class GenericBackend(DatabaseBackend):
         with session_func(self.engine) as session:
             self._create_all_view(view_name, unions, session)
 
+    def _query_for_select(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: Optional[Union[dict, list]] = None,
+    ) -> str:
+        """
+        Return the appropriate select statement for a given
+        table_name, and uri_query, calculating any backup
+        cutoff for audit data if needed.
+
+        """
+        backup_cutoff = None
+        if (
+            table_name.endswith("_audit")
+            and not self._audit_source_exists(table_name)
+            and self.backup_days is not None
+        ):
+            backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
+        sql = self.generator_class(
+            f'{self._fqtn(table_name)}',
+            uri_query,
+            data=data,
+            backup_cutoff=backup_cutoff,
+        )
+        return sql.select_query
+
 
 class SqliteBackend(GenericBackend):
 
@@ -641,20 +668,7 @@ class SqliteBackend(GenericBackend):
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            backup_cutoff = None
-            if (
-                table_name.endswith("_audit")
-                and not self._audit_source_exists(table_name)
-                and self.backup_days is not None
-            ):
-                backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
-            sql = self.generator_class(
-                f'{self._fqtn(table_name)}',
-                uri_query,
-                data=data,
-                backup_cutoff=backup_cutoff,
-            )
-            query = sql.select_query
+            query = self._query_for_select(table_name, uri_query, data)
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
                 yield json.loads(row[0])
@@ -901,20 +915,7 @@ class PostgresBackend(GenericBackend):
                 return iter([])
             query = self._union_queries(uri_query, tables)
         else:
-            backup_cutoff = None
-            if (
-                table_name.endswith("_audit")
-                and not self._audit_source_exists(table_name)
-                and self.backup_days is not None
-            ):
-                backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
-            sql = self.generator_class(
-                f'{self._fqtn(table_name)}',
-                uri_query,
-                data=data,
-                backup_cutoff=backup_cutoff,
-            )
-            query = sql.select_query
+            query = self._query_for_select(table_name, uri_query, data)
         with postgres_session(self.engine) as session:
             session.execute(query)
             for row in session:
