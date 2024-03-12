@@ -406,6 +406,9 @@ class TestBackends(object):
         with pytest.raises(ParseError):
             run_select_query('select=self,x,count(*)&group_by=self,x&order=x.desc')
 
+        with pytest.raises(ParseError):
+            run_select_query('select=self,count(*)&group_by=self,x')
+
         # UPDATE
         if verbose:
             print('\n===> UPDATE\n')
