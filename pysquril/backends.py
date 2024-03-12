@@ -625,7 +625,13 @@ class SqliteBackend(GenericBackend):
             queries.append(f"select json_object('{self.schema}{self.sep}{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
-    def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None, exclude_endswith: list = []) -> Iterable[tuple]:
+    def table_select(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: Optional[Union[dict, list]] = None,
+        exclude_endswith: list = [],
+    ) -> Iterable[tuple]:
         if "*" in table_name:
             tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
@@ -878,7 +884,13 @@ class PostgresBackend(GenericBackend):
             queries.append(f"select jsonb_build_object('{table_name}', ({sql.select_query}))")
         return " union all ".join(queries)
 
-    def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None, exclude_endswith: list = []) -> Iterable[tuple]:
+    def table_select(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: Optional[Union[dict, list]] = None,
+        exclude_endswith: list = [],
+    ) -> Iterable[tuple]:
         if "*" in table_name:
             tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
