@@ -64,8 +64,14 @@ class AuditTransaction(object):
 
     """
 
-    def __init__(self, identity: str, message: Optional[str] = "") -> None:
+    def __init__(
+        self,
+        identity: str,
+        message: Optional[str] = "",
+        identity_name: Optional[str] = None,
+    ) -> None:
         self.identity = identity
+        self.identity_name = identity_name
         self.timestamp = datetime.datetime.now().isoformat()
         self.transaction_id = self._id()
         self.message = message
@@ -80,6 +86,7 @@ class AuditTransaction(object):
             "event": event,
             "timestamp": self.timestamp,
             "identity": self.identity,
+            "identity_name": self.identity_name,
             "event_id": self._id(),
             "transaction_id": self.transaction_id,
             "query": query,
@@ -113,11 +120,13 @@ class DatabaseBackend(ABC):
         requestor: str = None,
         backup_days: Optional[int] = None,
         schema_pattern: Optional[str] = None,
+        requestor_name: Optional[str] = None,
     ) -> None:
         super(DatabaseBackend, self).__init__()
         self.engine = engine
         self.verbose = verbose
         self.requestor = requestor
+        self.requestor_name = requestor_name
         self.backup_days = backup_days
         self.schema_pattern = schema_pattern
 
