@@ -467,6 +467,9 @@ class GenericBackend(DatabaseBackend):
             if not tables:
                 return iter([])
             query = self._query_for_select_many(uri_query, tables)
+        elif "," in  table_name:
+            tables = table_name.split(",")
+            query = self._query_for_select_many(uri_query, tables)
         else:
             query = self._query_for_select(table_name, uri_query, data)
         return self._yield_results(query)

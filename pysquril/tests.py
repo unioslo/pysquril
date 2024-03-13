@@ -289,6 +289,19 @@ class TestBackends(object):
         assert len(out[0].get("another_table")) == 4
         assert len(out[1].get("test_table")) == 4
 
+        # table lists
+        out = list(
+            db.table_select(
+                'another_table,test_table',
+                'select=x,y&where=z=not.is.null',
+                exclude_endswith = ['_audit', '_metadata']
+            )
+        )
+        assert out is not None
+        assert len(out) == 2
+        assert len(out[0].get("another_table")) == 4
+        assert len(out[1].get("test_table")) == 4
+
         # WHERE
         if verbose:
             print('\n===> WHERE\n')
