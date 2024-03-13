@@ -410,6 +410,7 @@ class GenericBackend(DatabaseBackend):
         table_name: str,
         uri_query: str,
         data: Optional[Union[dict, list]] = None,
+        array_agg: bool = False,
     ) -> str:
         """
         Return the appropriate select statement for a given
@@ -429,14 +430,15 @@ class GenericBackend(DatabaseBackend):
             uri_query,
             data=data,
             backup_cutoff=backup_cutoff,
+            array_agg=array_agg,
         )
         return sql.select_query
 
     def _query_for_select_many(self, uri_query: str, tables: list) -> str:
         queries = []
         for table_name in tables:
-            sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, array_agg=True)
-            queries.append(f"select {self.json_object_func}('{table_name}', ({sql.select_query}))")
+            sql = self._query_for_select(table_name, uri_query, array_agg=True)
+            queries.append(f"select {self.json_object_func}('{table_name}', ({sql}))")
         return " union all ".join(queries)
 
     def _yield_results(self, query: str)-> Iterable[tuple]:
