@@ -346,6 +346,9 @@ class SetClause(Clause):
 class GroupByClause(Clause):
     term_class = SelectTerm
 
+class AlterClause(Clause):
+    term_class = WhereTerm
+
 class UriQuery(object):
 
     """
@@ -372,6 +375,7 @@ class UriQuery(object):
         self.order = self.parse_clause(prefix='order=', Cls=OrderClause)
         self.range = self.parse_clause(prefix='range=', Cls=RangeClause)
         self.set = self.parse_clause(prefix='set=', Cls=SetClause)
+        self.alter = self.parse_clause(prefix='alter=', Cls=AlterClause)
         self.group_by = self.parse_clause(prefix='group_by=', Cls=GroupByClause)
         self.message = self.parse_message()
         if self.group_by:
