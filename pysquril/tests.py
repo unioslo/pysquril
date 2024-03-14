@@ -21,7 +21,7 @@ from termcolor import colored
 from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
 from pysquril.exc import ParseError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
-from pysquril.parser import SelectClause, WhereClause, GroupByTerm, GroupByClause
+from pysquril.parser import SelectClause, WhereClause, GroupByTerm, GroupByClause, AlterClause
 from pysquril.test_data import dataset
 
 def sqlite_init(
@@ -72,7 +72,6 @@ class TestParser(object):
         c = WhereClause("a=gte.4,and:b=eq.'r,[,],',or:c=neq.0")
         assert len(c.split_clause()) == 3
 
-
     def test_group_by(self) -> None:
 
         with pytest.raises(ParseError):
@@ -92,6 +91,12 @@ class TestParser(object):
 
         c = GroupByClause("a.b.c,d")
         assert len(c.split_clause()) == 2
+
+    def test_alter(self) -> None:
+        c = AlterClause("name=eq.new_name")
+        term = c.parsed[0]
+        element = term.parsed[0]
+        assert element.val == "new_name"
 
 
 class TestBackends(object):
@@ -478,6 +483,8 @@ class TestBackends(object):
         with pytest.raises(Exception):
             out = run_delete_query('')
 
+        # ALTER
+        # table_name?alter=name=eq.new_name
 
 
     def test_sqlite(self):
