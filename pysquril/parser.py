@@ -294,6 +294,7 @@ class Clause(object):
     def __init__(self, original: str) -> None:
         self.original = original
         self.parsed = self.parse_terms()
+        self._enforce_constraints()
 
     def split_clause(self) -> list:
         braces_open = False
@@ -327,6 +328,14 @@ class Clause(object):
             out.append(self.term_class(term))
         return out
 
+    def _enforce_constraints(self) -> None:
+        """
+        Implemented if the specific clause must enforce
+        contraints not shared by all.
+
+        """
+        pass
+
 
 class SelectClause(Clause):
     term_class = SelectTerm
@@ -348,6 +357,19 @@ class GroupByClause(Clause):
 
 class AlterClause(Clause):
     term_class = WhereTerm
+
+    def _enforce_constraints(self) -> None:
+        """
+        Only rename is supported thus far.
+
+        """
+        term = self.parsed[0]
+        element = term.parsed[0]
+        if element.select_term.bare_term != "name":
+            raise ParseError("alter statements limited to `name` attribute")
+        if element.op != "eq":
+            raise ParseError(f"rename requires `eq` operator, not {element.op}")
+
 
 class UriQuery(object):
 
