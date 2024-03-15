@@ -93,10 +93,17 @@ class TestParser(object):
         assert len(c.split_clause()) == 2
 
     def test_alter(self) -> None:
+
         c = AlterClause("name=eq.new_name")
         term = c.parsed[0]
         element = term.parsed[0]
         assert element.val == "new_name"
+
+        with pytest.raises(ParseError):
+            AlterClause("num=eq.new_name")
+
+        with pytest.raises(ParseError):
+            AlterClause("name=neq.new_name")
 
 
 class TestBackends(object):
