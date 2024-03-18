@@ -12,3 +12,6 @@ class ParseError(PySqurilError):
 
 class DataIntegrityError(PySqurilError):
     status = HTTPStatus.BAD_REQUEST
+
+class OperationNotPermittedError(PySqurilError):
+    status = HTTPStatus.BAD_REQUEST
