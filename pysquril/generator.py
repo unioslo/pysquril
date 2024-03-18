@@ -37,11 +37,13 @@ class SqlGenerator(object):
         data: Union[list, dict] = None,
         backup_cutoff: Optional[str] = None,
         array_agg: Optional[bool] = False,
+        table_name_func: Optional[Callable] = None,
     ) -> None:
         self.table_name = table_name
         self.uri_query = uri_query
         self.data = data
         self.parsed_uri_query = UriQuery(table_name, uri_query)
+        self.table_name_func = table_name_func
         self.operators = {
             'eq': '=',
             'gt': '>',
@@ -63,6 +65,7 @@ class SqlGenerator(object):
         self.update_query = self.sql_update()
         self.delete_query = self.sql_delete()
         self.message = self.uri_message()
+        self.alter_query = self.sql_alter()
 
     # Classes that extend the SqlGenerator must implement the following methods
     # they are called by functions that are mapped over terms in clauses
@@ -356,6 +359,25 @@ class SqlGenerator(object):
 
     def uri_message(self) -> str:
         return self.parsed_uri_query.message
+
+    def sql_alter(self) -> str:
+        """
+        Change the name of a table, if it does not
+        exist an error is raised.
+
+        """
+        alter = self.parsed_uri_query.alter
+        if not alter:
+            return ""
+        else:
+            term = alter.parsed[0]
+            element = term.parsed[0]
+            if self.table_name.endswith('_audit"'):
+                new_name = self.table_name_func(f"{element.val}_audit", no_schema=True)
+            else:
+                new_name = self.table_name_func(element.val, no_schema=True)
+            sql = f"alter table {self.table_name} rename to {new_name}"
+            return sql
 
 
 class SqliteQueryGenerator(SqlGenerator):
