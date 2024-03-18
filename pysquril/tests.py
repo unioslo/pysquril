@@ -19,7 +19,7 @@ import pytest
 from termcolor import colored
 
 from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
-from pysquril.exc import ParseError
+from pysquril.exc import ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 from pysquril.parser import SelectClause, WhereClause, GroupByTerm, GroupByClause, AlterClause
 from pysquril.test_data import dataset
@@ -168,6 +168,17 @@ class TestBackends(object):
             db.table_delete(table, uri_query)
             return True
 
+        def run_alter_query(
+            uri_query: str,
+            table: str,
+            engine: Union[sqlite3.Connection, psycopg2.pool.SimpleConnectionPool] = engine,
+            verbose: bool = verbose,
+        ) -> dict:
+            db = DbBackendCls(engine)
+            out = db.table_alter(table, uri_query)
+            return out
+
+
         db = DbBackendCls(engine)
         try:
             db.table_delete('test_table', '')
@@ -175,6 +186,10 @@ class TestBackends(object):
             pass
         try:
             db.table_delete('another_table', '')
+        except Exception as e:
+            pass
+        try:
+            db.table_delete('silly_table', '')
         except Exception as e:
             pass
 
@@ -491,7 +506,27 @@ class TestBackends(object):
             out = run_delete_query('')
 
         # ALTER
-        # table_name?alter=name=eq.new_name
+        if verbose:
+            print('\n===> ALTER\n')
+
+        db.table_insert('some_table', data)
+
+        # without an audit table
+        out = run_alter_query("alter=name=eq.yet_another_table", "some_table")
+        assert len(out["tables"]) == 1
+
+        # with an audit table
+        out = run_update_query(
+            'set=x&where=float=eq.3.1',
+            data={'x': None},
+            table='yet_another_table'
+        )
+        out = run_alter_query("alter=name=eq.silly_table", "yet_another_table")
+        assert len(out["tables"]) == 2
+
+        # not permitted directly on an audit table
+        with pytest.raises(OperationNotPermittedError):
+            run_alter_query("alter=name=eq.new", "silly_table_audit")
 
 
     def test_sqlite(self):
