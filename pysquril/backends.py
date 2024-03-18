@@ -15,7 +15,7 @@ import psycopg2
 import psycopg2.extensions
 import psycopg2.pool
 
-from pysquril.exc import DataIntegrityError, ParseError
+from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 
 @contextmanager
@@ -176,6 +176,10 @@ class DatabaseBackend(ABC):
 
     @abstractmethod
     def table_restore(self, table_name: str, uri_query: str) -> bool:
+        pass
+
+    @abstractmethod
+    def table_alter(self, table_name: str, uri_query: str) -> dict:
         pass
 
 
@@ -367,7 +371,7 @@ class GenericBackend(DatabaseBackend):
         """
         raise NotImplementedError
 
-    def _fqtn(self, table_name: str, schema_names: Optional[str] = None) -> str:
+    def _fqtn(self, table_name: str, schema_name: Optional[str] = None, no_schema: bool = False) -> str:
         """
         Return a fully qualified table name - qualified with the schema.
 
@@ -535,6 +539,36 @@ class GenericBackend(DatabaseBackend):
             self.table_insert(f'{table_name}_audit', audit_data)
         return True
 
+    def table_alter(self, table_name: str, uri_query: str) -> dict:
+        """
+        Alter the name of a table, and its audit table (if it exists).
+        Return information about which tables were altered.
+
+        """
+        if table_name.endswith("_audit"):
+            raise OperationNotPermittedError("audit tables cannot be altered directly")
+        sql = self.generator_class(
+            f'{self._fqtn(table_name)}',
+            uri_query,
+            table_name_func=self._fqtn,
+        )
+        with self._session_func()(self.engine) as session:
+            session.execute(sql.alter_query)
+        altered = {"tables": [table_name]}
+        try:
+            audit_table_name = f"{table_name}_audit"
+            sql = self.generator_class(
+                f'{self._fqtn(audit_table_name)}',
+                uri_query,
+                table_name_func=self._fqtn,
+            )
+            with self._session_func()(self.engine) as session:
+                session.execute(sql.alter_query)
+            altered["tables"].append(audit_table_name)
+        except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
+            pass
+        return altered
+
 
 class SqliteBackend(GenericBackend):
 
@@ -593,7 +627,7 @@ class SqliteBackend(GenericBackend):
     def _session_func(self) -> Callable:
         return sqlite_session
 
-    def _fqtn(self, table_name: str, schema_name: Optional[str] = None) -> str:
+    def _fqtn(self, table_name: str, schema_name: Optional[str] = None, no_schema: bool = False) -> str:
         """
         Return a fully qualified table name - qualified with the schema.
 
@@ -754,11 +788,13 @@ class PostgresBackend(GenericBackend):
     def _session_func(self) -> Callable:
         return postgres_session
 
-    def _fqtn(self, table_name: str, schema_name: Optional[str] = None) -> str:
+    def _fqtn(self, table_name: str, schema_name: Optional[str] = None, no_schema: bool = False) -> str:
         """
         Return a fully qualified table name - qualified with the schema.
 
         """
+        if no_schema:
+            return f'"{table_name}"'
         schema = schema_name or self.schema
         schema = '"all"' if schema == "all" else schema # all is a reserved word
         return f'{schema}{self.sep}"{table_name}"'
