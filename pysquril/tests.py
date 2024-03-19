@@ -72,6 +72,12 @@ class TestParser(object):
         c = WhereClause("a=gte.4,and:b=eq.'r,[,],',or:c=neq.0")
         assert len(c.split_clause()) == 3
 
+        # ampersand
+
+        c = WhereClause("a=eq.'&'")
+        assert len(c.split_clause()) == 1
+
+
     def test_group_by(self) -> None:
 
         with pytest.raises(ParseError):
@@ -190,6 +196,7 @@ class TestBackends(object):
             pass
         try:
             db.table_delete('silly_table', '')
+            db.table_delete('silly_table_audit', '')
         except Exception as e:
             pass
 
