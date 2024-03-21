@@ -416,12 +416,66 @@ class UriQuery(object):
                 message = unquote(part.split("=")[-1])
         return message
 
+    def _slice_with(
+        self,
+        *,
+        target: str,
+        positions: list,
+    ) -> list:
+        """
+        Slice a string, at given index values, with
+        a given character, e.g.:
+
+        _slice_with(
+            target="abc&123&890",
+            positions=[4, 8],
+        ) -> ["abc", "123", "890"]
+
+        """
+        out = []
+        part = ""
+        last = False
+        if not positions:
+            return [target]
+        position = positions.pop(0)
+        for idx, char in enumerate(target):
+            if idx < position:
+                part += char
+            elif idx == position:
+                out.append(part)
+                part = ""
+                try:
+                    position = positions.pop(0)
+                except IndexError:
+                    last = True
+                continue
+            elif last:
+                part = target[position + 1:]
+                out.append(part)
+                break
+        return out
+
+    def _index_clauses(self, uri_query: str) -> list:
+        """
+        Find the index positions in the uri_query
+        which mark the separator `&` between clauses,
+        taking into account that ampersand can be
+        used inside quoted values of where clauses.
+
+        """
+        positions = []
+        is_quoted = False
+        for idx, token in enumerate(uri_query):
+            if token == "'":
+                is_quoted = not is_quoted
+            if token == "&" and not is_quoted:
+                positions.append(idx)
+        return positions
+
     def parse_clause(self, *, prefix: str, Cls: Clause) -> Clause:
-        if not prefix:
-            raise Exception('prefix not specified')
-        if not Cls:
-            raise Exception('Cls not specified')
-        parts = self.original.split('&')
+        parts = self._slice_with(
+            target=self.original, positions=self._index_clauses(self.original)
+        )
         for part in parts:
             if part.startswith(prefix):
                 return Cls(part[len(prefix):])
