@@ -416,7 +416,7 @@ class UriQuery(object):
                 message = unquote(part.split("=")[-1])
         return message
 
-    def _slice_with(
+    def _slice(
         self,
         *,
         target: str,
@@ -426,7 +426,7 @@ class UriQuery(object):
         Slice a string, at given index values, with
         a given character, e.g.:
 
-        _slice_with(
+        _slice(
             target="abc&123&890",
             positions=[4, 8],
         ) -> ["abc", "123", "890"]
@@ -473,7 +473,7 @@ class UriQuery(object):
         return positions
 
     def parse_clause(self, *, prefix: str, Cls: Clause) -> Clause:
-        parts = self._slice_with(
+        parts = self._slice(
             target=self.original, positions=self._index_clauses(self.original)
         )
         for part in parts:
