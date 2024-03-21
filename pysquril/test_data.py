@@ -100,5 +100,6 @@ dataset = [
         'quotes_inside': "this is 'quoted'",
         'self': 'no',
         'beneficial': 'yes',
+        'being': 'arising&vanishing',
     }
 ]
