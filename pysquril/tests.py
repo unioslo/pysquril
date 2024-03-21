@@ -125,7 +125,7 @@ class TestParser(object):
         indices = q._index_clauses("x&'&'&y")
         assert indices == [1, 5]
 
-        sliced = q._slice_with(target="1&a&bc", positions=[1, 3])
+        sliced = q._slice(target="1&a&bc", positions=[1, 3])
         assert sliced == ["1", "a", "bc"]
 
 
