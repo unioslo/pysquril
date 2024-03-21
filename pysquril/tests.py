@@ -21,7 +21,14 @@ from termcolor import colored
 from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
 from pysquril.exc import ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
-from pysquril.parser import SelectClause, WhereClause, GroupByTerm, GroupByClause, AlterClause
+from pysquril.parser import (
+    SelectClause,
+    WhereClause,
+    GroupByTerm,
+    GroupByClause,
+    AlterClause,
+    UriQuery,
+)
 from pysquril.test_data import dataset
 
 def sqlite_init(
@@ -110,6 +117,16 @@ class TestParser(object):
 
         with pytest.raises(ParseError):
             AlterClause("name=neq.new_name")
+
+    def test_uri_query(self) -> None:
+
+        q = UriQuery("", "")
+
+        indices = q._index_clauses("x&'&'&y")
+        assert indices == [1, 5]
+
+        sliced = q._slice_with(target="1&a&bc", positions=[1, 3])
+        assert sliced == ["1", "a", "bc"]
 
 
 class TestBackends(object):
@@ -409,7 +426,9 @@ class TestBackends(object):
         assert out[0][0] == 10
         out = run_select_query("select=x&where=meh2=eq.'()[],and:,or:. where=;'")
         assert out[0][0] == 107
-
+        # ampersand
+        out = run_select_query("select=x&where=being=eq.'arising&vanishing'")
+        assert out[0][0] == 10
 
         # ORDER
         if verbose:
