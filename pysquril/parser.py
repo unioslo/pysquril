@@ -5,10 +5,18 @@ import json
 import re
 
 from abc import ABC, abstractmethod
-from typing import Optional, Union, Callable
+from typing import Optional, Union, Callable, Any
 from urllib.parse import unquote
 
 from pysquril.exc import ParseError
+
+
+def previous_element(in_list: list, current_idx: int) -> Any:
+    try:
+        element = in_list[current_idx - 1]
+    except IndexError:
+        element = ""
+    return element
 
 class SelectElement(ABC):
     @property
@@ -181,8 +189,9 @@ class WhereTerm(object):
         groups = []
         # find groups, remove brackets
         is_quoted = False
-        for token in element:
-            if token == "'":
+        for idx, token in enumerate(element):
+            previous = previous_element(element, idx)
+            if token == "'" and previous != "\\":
                 is_quoted = not is_quoted
             if token in ['(', ')'] and not is_quoted:
                 groups.append(token)
@@ -200,7 +209,8 @@ class WhereTerm(object):
         op, op_found = "", False
         val = ""
         negated_ops = 0
-        for token in element:
+        for idx, token in enumerate(element):
+            previous = previous_element(element, idx)
             if not term_found:
                 if token != "=":
                     term += token
@@ -221,7 +231,11 @@ class WhereTerm(object):
                         else:
                             op_found = True
                 else:
-                    if token != "'":
+                    if (token == "'" and previous != "\\") or token == "\\":
+                        continue
+                    elif token == "'" and previous == "\\":
+                        val += "''"
+                    else:
                         val += token
         if op == "not.is":
             op = "is.not"
@@ -301,8 +315,10 @@ class Clause(object):
         temp = ""
         parts = []
         is_quoted = False
-        for token in self.original:
-            if token == "'":
+        previous = ""
+        for idx, token in enumerate(self.original):
+            previous = previous_element(self.original, idx)
+            if token == "'" and previous != "\\":
                 is_quoted = not is_quoted
             if not is_quoted:
                 if token == '[':
