@@ -84,6 +84,13 @@ class TestParser(object):
         c = WhereClause("a=eq.'&'")
         assert len(c.split_clause()) == 1
 
+        # escaping quotes
+
+        c = WhereClause("lol=eq.'\\'n kat loop oor die pad'")
+        where_term = c.parsed[0]
+        where_element = where_term.parsed[0]
+        assert where_element.val == "''n kat loop oor die pad"
+
 
     def test_group_by(self) -> None:
 
@@ -127,6 +134,10 @@ class TestParser(object):
 
         sliced = q._slice(target="1&a&bc", positions=[1, 3])
         assert sliced == ["1", "a", "bc"]
+
+        q = UriQuery("table", "where=a=eq.'g\\'n mooi dag buite'")
+        assert q.where.original == "a=eq.'g\\'n mooi dag buite'"
+        assert q.where.parsed[0].parsed[0].val == "g''n mooi dag buite"
 
 
 class TestBackends(object):
@@ -428,6 +439,9 @@ class TestBackends(object):
         assert out[0][0] == 107
         # ampersand
         out = run_select_query("select=x&where=being=eq.'arising&vanishing'")
+        assert out[0][0] == 10
+        # esacping single quotes
+        out = run_select_query("select=x&where=loop=eq.'g\\'n kat oor die pad'")
         assert out[0][0] == 10
 
         # ORDER
