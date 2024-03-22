@@ -101,5 +101,6 @@ dataset = [
         'self': 'no',
         'beneficial': 'yes',
         'being': 'arising&vanishing',
+        'loop': "g'n kat oor die pad",
     }
 ]
