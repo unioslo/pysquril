@@ -48,6 +48,9 @@ def postgres_init(dbconfig: dict) -> psycopg2.pool.SimpleConnectionPool:
     )
     return pool
 
+TEST_REQUESTOR = "p11-treq"
+TEST_REQUESTOR_NAME = "Test Requestor"
+
 class TestParser(object):
 
     def test_select(self) -> None:
@@ -656,6 +659,8 @@ class TestSqlBackend(unittest.TestCase):
         self.assertTrue(audit_event["timestamp"] is not None)
         self.assertTrue(audit_event["query"] is not None)
         self.assertEqual(audit_event["message"], message)
+        self.assertEqual(audit_event["identity"], TEST_REQUESTOR)
+        self.assertEqual(audit_event["identity_name"], TEST_REQUESTOR_NAME)
 
         # restore updates
         with self.assertRaises(ParseError): # missing restore directive
@@ -836,7 +841,9 @@ class TestSqliteBackend(TestSqlBackend):
         self.directory = tempfile.gettempdir()
         self.file = f"{__package__}_test.db"
         self.engine = sqlite_init(self.directory, name=self.file)
-        self.backend = SqliteBackend(self.engine)
+        self.backend = SqliteBackend(
+            self.engine, requestor=TEST_REQUESTOR, requestor_name=TEST_REQUESTOR_NAME
+        )
         self.session_func = sqlite_session
         self.backend_class = SqliteBackend
     
@@ -857,7 +864,9 @@ class TestPostgresBackend(TestSqlBackend):
                 "host": os.environ.get("PYSQURIL_POSTGRES_HOST", "localhost"),
             }
         )
-        self.backend = PostgresBackend(self.engine)
+        self.backend = PostgresBackend(
+            self.engine, requestor=TEST_REQUESTOR, requestor_name=TEST_REQUESTOR_NAME
+        )
         self.backend.initialise()
         self.session_func = postgres_session
         self.backend_class = PostgresBackend
