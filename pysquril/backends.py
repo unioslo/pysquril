@@ -301,7 +301,7 @@ class GenericBackend(DatabaseBackend):
         target_data = list(self.table_select(f"{table_name}_audit", uri_query))
         if not target_data:
             return work_done # nothing to do
-        tsc = AuditTransaction(self.requestor, message)
+        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
         session_func = self._session_func()
         try:
             # ensure the table exists, may have been deleted
@@ -501,7 +501,7 @@ class GenericBackend(DatabaseBackend):
         """
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
-        tsc = AuditTransaction(self.requestor, sql.message)
+        tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
         for row in self.table_select(table_name, uri_query):
             audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
         with self._session_func()(self.engine) as session:
@@ -527,7 +527,7 @@ class GenericBackend(DatabaseBackend):
         """
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
-        tsc = AuditTransaction(self.requestor, sql.message) if not tsc else tsc
+        tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name) if not tsc else tsc
         for val in self.table_select(table_name, uri_query, data=data):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
         if session:
@@ -614,6 +614,7 @@ class SqliteBackend(GenericBackend):
         requestor: str = None,
         backup_days: Optional[int] = None,
         schema_pattern: Optional[str] = None,
+        requestor_name: Optional[str] = None,
     ) -> None:
         self.engine = engine
         self.verbose = verbose
@@ -621,6 +622,7 @@ class SqliteBackend(GenericBackend):
         self.schema = schema if schema else ""
         self.sep = "_" if self.schema else ""
         self.requestor = requestor
+        self.requestor_name = requestor_name
         self.backup_days = backup_days
         self.schema_pattern = schema_pattern
 
@@ -776,12 +778,14 @@ class PostgresBackend(GenericBackend):
         requestor: str = None,
         backup_days: Optional[int] = None,
         schema_pattern: Optional[str] = None,
+        requestor_name: Optional[str] = None,
     ) -> None:
         self.engine = pool
         self.verbose = verbose
         self.table_definition = '(data jsonb not null, uniq text unique not null)'
         self.schema = schema if schema else 'public'
         self.requestor = requestor
+        self.requestor_name = requestor_name
         self.backup_days = backup_days
         self.schema_pattern = schema_pattern
 
