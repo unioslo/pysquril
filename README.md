@@ -3,6 +3,11 @@
 
 Python implementation of structured URI query language.
 
+## Query language
+
+* [EBNF](https://github.com/unioslo/pysquril/blob/master/docs/grammar.ebnf)
+* [Railroad diagrams](https://unioslo.github.io/pysquril/grammar.html)
+
 ## Tests
 
 ```bash
