@@ -492,21 +492,25 @@ class GenericBackend(DatabaseBackend):
         table_name: str,
         uri_query: str,
         update_all_view: Optional[bool] = False,
+        audit: bool = True,
     ) -> bool:
         """
         Delete the intended data from the table if a uri_query
         is present, otherwise drop the table. All deletions
-        are recorded in the audit log.
+        are recorded in the audit log by default, but this can
+        be disabled by callers. This is useful for cases where
+        data is being deleted completely for compliance purposes.
 
         """
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
-        tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-        for row in self.table_select(table_name, uri_query):
-            audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
+        if audit:
+            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+            for row in self.table_select(table_name, uri_query):
+                audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
         with self._session_func()(self.engine) as session:
             session.execute(sql.delete_query)
-            if not table_name.endswith("_audit"):
+            if not table_name.endswith("_audit") and audit:
                 self.table_create(f'{table_name}_audit', session)
                 self.table_insert(f'{table_name}_audit', audit_data, session)
         if update_all_view:

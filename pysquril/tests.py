@@ -813,6 +813,18 @@ class TestSqlBackend(unittest.TestCase):
         # cleanup
         self.backend.table_delete(table_name=f"{not_backup_table}_audit", uri_query="")
 
+        # delete without audit
+        table_without_audit = "without_audit"
+        self.backend.table_insert(table_name=table_without_audit, data={"breathe": "calming", "id": 0})
+        self.backend.table_delete(table_name=table_without_audit, uri_query="", audit=False)
+        with pytest.raises((psycopg2.errors.UndefinedTable, sqlite3.OperationalError)):
+            audit = list(
+                self.backend.table_select(
+                    table_name=f"{table_without_audit}_audit",
+                    uri_query="",
+                )
+            )
+
 
     def test_all_view(self) -> bool:
         tenant1 = "p11"
