@@ -62,6 +62,24 @@ class AuditTransaction(object):
     timestamps, and event IDs, propagates
     audit messages.
 
+    There are five types of audit events:
+
+    1. update - changes to existing data (default on)
+    2. delete - deletions of existing data (default on)
+    3. restore - rolling back update and/or delete events (default on)
+    4. create - records of new data (default off)
+    5. read - who accessed with a given query  (default off)
+
+    Notes:
+
+    If create and read events are used, one could calculate
+    who looked at data for a given data subject, when on the
+    basis of audit data alone. One would have to apply the
+    query in each read event to the state of the data at the
+    time of the query, and check if the data belonging to the
+    subject (and/or the identfier of the data subject)
+    is contained in the returned result.
+
     """
 
     def __init__(
