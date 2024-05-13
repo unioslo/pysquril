@@ -102,6 +102,12 @@ class AuditTransaction(object):
     def event_restore(self, *, diff: Any, previous: Any, query: str) -> dict:
         return self._event(diff, previous, "restore", query)
 
+    def event_create(self, *, diff: Any) -> dict:
+        return self._event(diff, None, "create", None)
+
+    def event_read(self, *, query: str) -> dict:
+        return self._event(None, None, "read", query)
+
 
 class DatabaseBackend(ABC):
 
@@ -152,6 +158,7 @@ class DatabaseBackend(ABC):
         table_name: str,
         data: Union[dict, list],
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+        audit: bool = False,
     ) -> bool:
         pass
 
@@ -167,11 +174,17 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
-    def table_delete(self, table_name: str, uri_query: str) -> bool:
+    def table_delete(self, table_name: str, uri_query: str, audit: bool = True) -> bool:
         pass
 
     @abstractmethod
-    def table_select(self, table_name: str, uri_query: str, data: Optional[Union[dict, list]] = None) -> Iterable[tuple]:
+    def table_select(
+        self,
+        table_name: str,
+        uri_query: str,
+        data: Optional[Union[dict, list]] = None,
+        audit: bool = False,
+    ) -> Iterable[tuple]:
         pass
 
     @abstractmethod
@@ -314,7 +327,7 @@ class GenericBackend(DatabaseBackend):
             for entry in target_data:
                 target_entry = entry.get("previous")
                 pk_value = self._get_pk_value(primary_key, target_entry) if target_entry else None
-                if pk_value in handled or entry.get("event") == "restore":
+                if pk_value in handled or entry.get("event") in ["restore", "create", "read"]:
                     continue
                 target_entry = entry.get("previous")
                 result = list(
@@ -463,6 +476,7 @@ class GenericBackend(DatabaseBackend):
         uri_query: str,
         data: Optional[Union[dict, list]] = None,
         exclude_endswith: list = [],
+        audit: bool = False,
     ) -> Iterable[tuple]:
         """
         Yield a resulset associated with a table_name, and a uri_query.
@@ -485,6 +499,9 @@ class GenericBackend(DatabaseBackend):
             query = self._query_for_select_many(uri_query, tables)
         else:
             query = self._query_for_select(table_name, uri_query, data)
+        if audit:
+            tsc = AuditTransaction(identity=self.requestor, identity_name=self.requestor_name)
+            self.table_insert(f"{table_name}_audit", tsc.event_read(query=uri_query))
         return self._yield_results(query)
 
     def table_delete(
@@ -572,6 +589,17 @@ class GenericBackend(DatabaseBackend):
         except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
             pass
         return altered
+
+    def _audit_insert(self, table_name: str, data: Union[str, list]) -> bool:
+        tsc = AuditTransaction(identity=self.requestor, identity_name=self.requestor_name)
+        audit_data = []
+        if type(data) is list:
+            for row in data:
+                audit_data.append(tsc.event_create(diff=row))
+        else:
+            audit_data = [tsc.event_create(diff=data)]
+        self.table_insert(f"{table_name}_audit", audit_data)
+        return True
 
 
 class SqliteBackend(GenericBackend):
@@ -708,6 +736,7 @@ class SqliteBackend(GenericBackend):
         data: Union[dict, list],
         session: Optional[sqlite3.Cursor] = None,
         update_all_view: Optional[bool] = False,
+        audit: bool = False,
     ) -> bool:
         try:
             dtype = type(data)
@@ -723,19 +752,19 @@ class SqliteBackend(GenericBackend):
                 # from a context manager estabilshed by the caller
                 # and if an exception is raised, the caller handles it
                 session.executemany(insert_stmt, target)
-                return True
             else:
                 try:
                     with sqlite_session(self.engine) as session:
                         session.executemany(insert_stmt, target)
-                    return True
                 except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
                     with sqlite_session(self.engine) as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
                     if update_all_view:
                         self._define_all_view(table_name)
-                    return True
+            if audit:
+                self._audit_insert(table_name, data)
+            return True
         except sqlite3.IntegrityError as e:
             logging.info('Ignoring duplicate row')
             return True # idempotent PUT
@@ -897,6 +926,7 @@ class PostgresBackend(GenericBackend):
         data: Union[dict, list],
         session: Optional[psycopg2.extensions.cursor] = None,
         update_all_view: Optional[bool] = False,
+        audit: bool = False,
     ) -> bool:
         try:
             dtype = type(data)
@@ -912,19 +942,19 @@ class PostgresBackend(GenericBackend):
                 # from a context manager estabilshed by the caller
                 # and if an exception is raised, the caller handles it
                 session.executemany(insert_stmt, target)
-                return True
             else:
                 try:
                     with postgres_session(self.engine) as session:
                         session.executemany(insert_stmt, target)
-                    return True
                 except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
                     with postgres_session(self.engine) as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
                     if update_all_view:
                         self._define_all_view(table_name)
-                    return True
+            if audit:
+                self._audit_insert(table_name, data)
+            return True
         except psycopg2.IntegrityError as e:
             logging.info('Ignoring duplicate row')
             return True # idempotent PUT
