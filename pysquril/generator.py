@@ -29,6 +29,7 @@ class SqlGenerator(object):
 
     db_init_sql = None
     json_array_sql = None
+    cascade_on_drop = False
 
     def __init__(
         self,
@@ -353,6 +354,8 @@ class SqlGenerator(object):
         _where = self._gen_sql_where_clause()
         if not _where:
             query = f"drop table {self.table_name}"
+            if self.cascade_on_drop:
+                query += " cascade"
         else:
             query = f"delete from {self.table_name} {_where}"
         return query
@@ -499,6 +502,7 @@ class SqliteQueryGenerator(SqlGenerator):
 
 class PostgresQueryGenerator(SqlGenerator):
 
+    cascade_on_drop = True
     json_array_sql = 'jsonb_build_array'
     db_init_sql = [
         """
