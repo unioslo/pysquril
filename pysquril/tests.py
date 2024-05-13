@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import unittest
+import uuid
 import tempfile
 
 from datetime import timedelta
@@ -825,19 +826,46 @@ class TestSqlBackend(unittest.TestCase):
                 )
             )
 
+        # audit for create and read
+        verbose_table = "table_with_full_audit"
+        try:
+            self.backend.table_delete(table_name=verbose_table, uri_query="")
+            self.backend.table_delete(table_name=f"{verbose_table}_audit", uri_query="")
+        except Exception:
+            pass
+        self.backend.table_insert(
+            table_name=verbose_table,
+            data={"observing": "mind objects", "id": 0},
+            audit=True,
+        )
+        self.backend.table_select(
+            table_name=verbose_table, uri_query="select=observing", audit=True,
+        )
+        audit = list(
+            self.backend.table_select(
+                table_name=f"{verbose_table}_audit",
+                uri_query="",
+            )
+        )
+        self.assertEqual(len(audit), 2)
+        self.backend.table_delete(table_name=f"{verbose_table}_audit", uri_query="")
 
     def test_all_view(self) -> bool:
         tenant1 = "p11"
         tenant2 = "p12"
         tenant3 = "p13"
         table_name = "A"
-        for idx, tenant in enumerate([tenant1, tenant2, tenant3]):
+        for tenant in [tenant1, tenant2, tenant3]:
             view_backend = self.backend_class(
                 self.engine, schema=tenant, schema_pattern="p"
             )
+            try:
+                view_backend.table_delete(table_name=table_name, uri_query="")
+            except Exception as e:
+                pass
             view_backend.table_insert(
                 table_name,
-                data={"id": idx, "data": f"yes {str(idx)}"},
+                data={"id": str(uuid.uuid4()), "data": f"yes"},
                 update_all_view=True,
             )
         all_backend = self.backend_class(
