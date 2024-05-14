@@ -25,8 +25,6 @@ PYthon Structured URI Query Language. A library for implementing versioned, quer
 ```python
 import sqlite3
 
-from urllib.parse import quote
-
 from pysquril.backends import SqliteBackend
 
 # get a connection pool
