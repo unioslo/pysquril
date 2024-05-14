@@ -387,6 +387,28 @@ class AlterClause(Clause):
             raise ParseError(f"rename requires `eq` operator, not {element.op}")
 
 
+class Message(object):
+
+    def __init__(self, original: str) -> None:
+        self.original = original
+        self.parsed = self.parse_message(original)
+
+    def parse_message(self, message: str) -> str:
+        out = ""
+        if unquote(message) != message:
+            out = unquote(message)
+        else:
+            for idx, token in enumerate(message):
+                previous = previous_element(message, idx)
+                if (token == "'" and previous != "\\") or token == "\\":
+                    continue
+                elif token == "'" and previous == "\\":
+                    out += "''"
+                else:
+                    out += token
+        return out
+
+
 class UriQuery(object):
 
     """
@@ -423,14 +445,6 @@ class UriQuery(object):
             select_keys = self.select.split_clause()
             if not set(group_by_keys).intersection(select_keys) == set(group_by_keys):
                 raise ParseError("group by keys must be used in select")
-
-    def parse_message(self) -> str:
-        message = ""
-        parts = self.original.split("&")
-        for part in parts:
-            if part.startswith("message="):
-                message = unquote(part.split("=")[-1])
-        return message
 
     def _slice(
         self,
@@ -495,3 +509,14 @@ class UriQuery(object):
         for part in parts:
             if part.startswith(prefix):
                 return Cls(part[len(prefix):])
+
+    def parse_message(self) -> str:
+        prefix = "message="
+        message = None
+        parts = self._slice(
+            target=self.original, positions=self._index_clauses(self.original)
+        )
+        for part in parts:
+            if part.startswith(prefix):
+                message = Message(part[len(prefix):]).parsed
+        return message
