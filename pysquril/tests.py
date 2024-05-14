@@ -447,6 +447,10 @@ class TestBackends(object):
         # esacping single quotes
         out = run_select_query("select=x&where=loop=eq.'g\\'n kat oor die pad'")
         assert out[0][0] == 10
+        # with a simple array
+        out = run_select_query("select=z&where=b[0]=eq.1")
+        assert out[0][0] == 5
+
 
         # ORDER
         if verbose:
