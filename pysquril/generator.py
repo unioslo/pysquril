@@ -468,9 +468,15 @@ class SqliteQueryGenerator(SqlGenerator):
             else:
                 target = select_term.bare_term
         else:
-            if not isinstance(select_term.parsed[0], Key):
-                raise Exception(f'Invalid term {term.original}')
-            target = select_term.parsed[0].element
+            if not (
+                isinstance(select_term.parsed[0], Key) or
+                isinstance(select_term.parsed[0], ArraySpecific)
+            ):
+                raise ParseError(f'Unsupported where term: {term.original}')
+            if isinstance(select_term.parsed[0], ArraySpecific):
+                target = select_term.original
+            else:
+                target = select_term.parsed[0].element
         col = f"json_extract(data, '$.{target}')"
         if isinstance(term, WhereTerm) and term.parsed[0].op in ['eq', 'neq']:
             col = f"cast ({col} as text)"
@@ -632,10 +638,18 @@ class PostgresQueryGenerator(SqlGenerator):
                 target = self._gen_select_target(select_term.bare_term)
                 col = f"data{final_select_op}'{{{target}}}'"
         else:
-            if not isinstance(select_term.parsed[0], Key):
-                raise Exception(f'Invalid term {term.original}')
-            target = select_term.parsed[0].element
-            col = f"data{final_select_op}'{{{target}}}'"
+            if not (
+                isinstance(select_term.parsed[0], Key) or
+                isinstance(select_term.parsed[0], ArraySpecific)
+            ):
+                raise ParseError(f'Unsupported where term: {term.original}')
+            if isinstance(select_term.parsed[0], ArraySpecific):
+                target = self._gen_select_target(select_term.bare_term)
+                _idx = select_term.parsed[0].idx
+                col = f"data#>'{{{target}}}'{final_select_op}'{{{_idx}}}'"
+            else:
+                target = select_term.parsed[0].element
+                col = f"data{final_select_op}'{{{target}}}'"
         if isinstance(term, WhereTerm):
             try:
                 integer_ops = ['gt', 'gte', 'lt', 'lte']
@@ -657,7 +671,6 @@ class PostgresQueryGenerator(SqlGenerator):
             raise ParseError(f'Target key of update: {key} not found in payload')
         val = json.dumps(self.data[key]).replace("'", "''") # to handle single quotes inside
         return f" set data = jsonb_set(data, '{{{key}}}', ('{val}')::jsonb)"
-
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         return f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
