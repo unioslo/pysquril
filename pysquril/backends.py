@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import sqlite3
+import uuid
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -17,7 +18,7 @@ import psycopg2.pool
 
 from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
-from pysquril.utils import audit_table, audit_table_src
+from pysquril.utils import audit_table, audit_table_src, AUDIT_SEPARATOR, AUDIT_SUFFIX
 
 def sqlite_init(path: str) -> sqlite3.Connection:
     engine = sqlite3.connect(path)
@@ -471,6 +472,7 @@ class GenericBackend(DatabaseBackend):
         uri_query: str,
         data: Optional[Union[dict, list]] = None,
         array_agg: bool = False,
+        apply_cutoff: bool = False,
     ) -> str:
         """
         Return the appropriate select statement for a given
@@ -479,11 +481,7 @@ class GenericBackend(DatabaseBackend):
 
         """
         backup_cutoff = None
-        if (
-            table_name.endswith("_audit")
-            and not self._audit_source_exists(table_name)
-            and self.backup_days is not None
-        ):
+        if apply_cutoff:
             backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
         sql = self.generator_class(
             f'{self._fqtn(table_name)}',
@@ -494,15 +492,43 @@ class GenericBackend(DatabaseBackend):
         )
         return sql.select_query
 
-    def _query_for_select_many(self, uri_query: str, tables: list) -> str:
+    def _query_for_select_many(self, uri_query: str, tables: list, apply_cutoff: bool = False) -> str:
         queries = []
         for table_name in tables:
-            sql = self._query_for_select(table_name, uri_query, array_agg=True)
+            sql = self._query_for_select(table_name, uri_query, array_agg=True, apply_cutoff=apply_cutoff)
             queries.append(f"select {self.json_object_func}('{table_name}', ({sql}))")
         return " union all ".join(queries)
 
     def _yield_results(self, query: str)-> Iterable[tuple]:
         raise NotImplementedError
+
+    def _is_audit_table(self, table_name: str) -> bool:
+        """
+        Determine whether a given table is an audit table.
+
+        """
+        sufficient = False
+        neccesary = table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX)
+        if not neccesary:
+            return neccesary and sufficient
+        try:
+            dummy_event = AuditTransaction("").event_read(query="")
+            result = list(
+                self._yield_results(
+                    f"select data from {table_name} limit 1"
+                )
+            )[0]
+            sufficient = (
+                uuid.UUID(result.get("transaction_id"))
+                and uuid.UUID(result.get("event_id"))
+                and result.get("event") in ["update", "delete", "read", "create"]
+                and result.get("timestamp") is not None
+                and set(result.keys()).difference(dummy_event.keys()) == set()
+            )
+
+        except Exception as e:
+            pass
+        return neccesary and sufficient
 
     def table_select(
         self,
@@ -523,16 +549,21 @@ class GenericBackend(DatabaseBackend):
         Optionally exclude tables that end with a specific pattern.
 
         """
+        apply_cutoff = (
+            self._is_audit_table(table_name)
+            and not self._audit_source_exists(table_name)
+            and self.backup_days is not None
+        )
         if "*" in table_name:
             tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
             if not tables:
                 return iter([])
-            query = self._query_for_select_many(uri_query, tables)
+            query = self._query_for_select_many(uri_query, tables, apply_cutoff=apply_cutoff)
         elif "," in  table_name:
             tables = table_name.split(",")
-            query = self._query_for_select_many(uri_query, tables)
+            query = self._query_for_select_many(uri_query, tables, apply_cutoff=apply_cutoff)
         else:
-            query = self._query_for_select(table_name, uri_query, data)
+            query = self._query_for_select(table_name, uri_query, data, apply_cutoff=apply_cutoff)
         if audit:
             tsc = AuditTransaction(identity=self.requestor, identity_name=self.requestor_name)
             self.table_insert(audit_table(table_name), tsc.event_read(query=uri_query))
@@ -580,6 +611,8 @@ class GenericBackend(DatabaseBackend):
         Update one or more keys, recording changes in the audit log.
 
         """
+        if self._is_audit_table(table_name):
+            raise OperationNotPermittedError("audit tables cannot be altered directly")
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
         tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name) if not tsc else tsc
@@ -600,7 +633,7 @@ class GenericBackend(DatabaseBackend):
         Return information about which tables were altered.
 
         """
-        if table_name.endswith("_audit"):
+        if self._is_audit_table(table_name):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(
             f'{self._fqtn(table_name)}',
