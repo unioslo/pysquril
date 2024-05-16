@@ -19,6 +19,7 @@ from pysquril.parser import (
     Clause,
     UriQuery,
 )
+from pysquril.utils import audit_table
 
 class SqlGenerator(object):
 
@@ -39,6 +40,7 @@ class SqlGenerator(object):
         backup_cutoff: Optional[str] = None,
         array_agg: Optional[bool] = False,
         table_name_func: Optional[Callable] = None,
+        audit: bool = False,
     ) -> None:
         self.table_name = table_name
         self.uri_query = uri_query
@@ -66,7 +68,7 @@ class SqlGenerator(object):
         self.update_query = self.sql_update()
         self.delete_query = self.sql_delete()
         self.message = self.uri_message()
-        self.alter_query = self.sql_alter()
+        self.alter_query = self.sql_alter(audit)
 
     # Classes that extend the SqlGenerator must implement the following methods
     # they are called by functions that are mapped over terms in clauses
@@ -363,7 +365,7 @@ class SqlGenerator(object):
     def uri_message(self) -> str:
         return self.parsed_uri_query.message
 
-    def sql_alter(self) -> str:
+    def sql_alter(self, audit: bool) -> str:
         """
         Change the name of a table, if it does not
         exist an error is raised.
@@ -375,8 +377,8 @@ class SqlGenerator(object):
         else:
             term = alter.parsed[0]
             element = term.parsed[0]
-            if self.table_name.endswith('_audit"'):
-                new_name = self.table_name_func(f"{element.val}_audit", no_schema=True)
+            if audit:
+                new_name = self.table_name_func(audit_table(element.val), no_schema=True)
             else:
                 new_name = self.table_name_func(element.val, no_schema=True)
             sql = f"alter table {self.table_name} rename to {new_name}"
