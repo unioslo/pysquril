@@ -17,7 +17,7 @@ import psycopg2.pool
 
 from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
-
+from pysquril.utils import audit_table
 
 def sqlite_init(path: str) -> sqlite3.Connection:
     engine = sqlite3.connect(path)
@@ -68,15 +68,6 @@ def postgres_session(
         session.close()
         engine.commit()
         pool.putconn(engine)
-
-
-def audit_table(table_name: str) -> str:
-    """
-    Construct audit table name from table_name.
-
-    """
-    sep = "_"
-    return f"{table_name}{sep}audit"
 
 
 class AuditTransaction(object):
@@ -625,6 +616,7 @@ class GenericBackend(DatabaseBackend):
                 f'{self._fqtn(audit_table_name)}',
                 uri_query,
                 table_name_func=self._fqtn,
+                audit=True,
             )
             with self._session_func()(self.engine) as session:
                 session.execute(sql.alter_query)

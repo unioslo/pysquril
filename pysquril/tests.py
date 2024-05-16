@@ -26,7 +26,6 @@ from pysquril.backends import (
     postgres_init,
     sqlite_session,
     postgres_session,
-    audit_table,
 )
 from pysquril.exc import ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
@@ -39,6 +38,7 @@ from pysquril.parser import (
     UriQuery,
 )
 from pysquril.test_data import dataset
+from pysquril.utils import audit_table
 
 
 TEST_REQUESTOR = "p11-treq"
