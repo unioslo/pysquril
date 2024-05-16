@@ -26,6 +26,7 @@ from pysquril.backends import (
     postgres_init,
     sqlite_session,
     postgres_session,
+    audit_table,
 )
 from pysquril.exc import ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
@@ -219,7 +220,7 @@ class TestBackends(object):
             pass
         try:
             db.table_delete('silly_table', '')
-            db.table_delete('silly_table_audit', '')
+            db.table_delete(audit_table('silly_table'), '')
         except Exception as e:
             pass
 
@@ -565,7 +566,7 @@ class TestBackends(object):
 
         # not permitted directly on an audit table
         with pytest.raises(OperationNotPermittedError):
-            run_alter_query("alter=name=eq.new", "silly_table_audit")
+            run_alter_query("alter=name=eq.new", audit_table("silly_table"))
 
 
     def test_sqlite(self):
@@ -643,7 +644,7 @@ class TestSqlBackend(unittest.TestCase):
 
         # view update audit data
         result = list(self.backend.table_select(
-            table_name=f"{test_table}_audit", uri_query="order=timestamp.asc")
+            table_name=audit_table(test_table), uri_query="order=timestamp.asc")
         )
         self.assertTrue(result)
         audit_event = result[0]
@@ -677,7 +678,7 @@ class TestSqlBackend(unittest.TestCase):
         result = list(self.backend.table_select(table_name=test_table, uri_query="where=id=eq.1"))
         self.assertEqual(result[0].get(key_to_update), original_value)
         result = list(self.backend.table_select(
-            table_name=f"{test_table}_audit", uri_query="order=timestamp.desc")
+            table_name=audit_table(test_table), uri_query="order=timestamp.desc")
         )
         self.assertEqual(result[0].get("message"), message)
 
@@ -687,10 +688,10 @@ class TestSqlBackend(unittest.TestCase):
             table_name=test_table,
             uri_query=f"where=key3=not.is.null&message={quote(message)}"
         )
-        result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
+        result = list(self.backend.table_select(table_name=audit_table(test_table), uri_query=""))
         self.assertEqual(len(result), 4)
         result = list(self.backend.table_select(
-            table_name=f"{test_table}_audit", uri_query="order=timestamp.desc")
+            table_name=audit_table(test_table), uri_query="order=timestamp.desc")
         )
         self.assertEqual(result[0].get("message"), message)
 
@@ -708,7 +709,7 @@ class TestSqlBackend(unittest.TestCase):
         self.backend.table_delete(table_name=test_table, uri_query="")
 
         # check that the deletes are in the audit
-        result = list(self.backend.table_select(table_name=f"{test_table}_audit", uri_query=""))
+        result = list(self.backend.table_select(table_name=audit_table(test_table), uri_query=""))
         self.assertEqual(len(result), 7)
 
         # restore everything
@@ -727,10 +728,10 @@ class TestSqlBackend(unittest.TestCase):
             next(select)
 
         # delete the audit table
-        self.backend.table_delete(table_name=f"{test_table}_audit", uri_query="")
+        self.backend.table_delete(table_name=audit_table(test_table), uri_query="")
         
         # try to retrieve deleted table's audit table
-        select = self.backend.table_select(table_name=f"{test_table}_audit", uri_query="")
+        select = self.backend.table_select(table_name=audit_table(test_table), uri_query="")
         with self.assertRaises((sqlite3.OperationalError, psycopg2.errors.UndefinedTable)):
             next(select)
 
@@ -748,7 +749,7 @@ class TestSqlBackend(unittest.TestCase):
             data={"lol": "wat"},
         )
         self.backend.table_delete(table_name=some_table, uri_query="")
-        audit = list(self.backend.table_select(table_name=f"{some_table}_audit", uri_query=""))
+        audit = list(self.backend.table_select(table_name=audit_table(some_table), uri_query=""))
         self.assertEqual(len(audit), 3)
         nested_result = self.backend.table_restore(
             table_name=some_table, uri_query=f"restore&primary_key=pk.id"
@@ -756,7 +757,7 @@ class TestSqlBackend(unittest.TestCase):
         self.assertEqual(len(nested_result.get("restores")), 2)
         self.assertEqual(len(nested_result.get("updates")), 0)
         self.backend.table_delete(table_name=some_table, uri_query="")
-        self.backend.table_delete(table_name=f"{some_table}_audit", uri_query="")
+        self.backend.table_delete(table_name=audit_table(some_table), uri_query="")
 
 
         # test backup retention enforcement
@@ -767,7 +768,7 @@ class TestSqlBackend(unittest.TestCase):
         self.backend.table_delete(table_name=backup_table, uri_query="")
 
         # within the retention period
-        audit = list(self.backend.table_select(table_name=f"{backup_table}_audit", uri_query=""))
+        audit = list(self.backend.table_select(table_name=audit_table(backup_table), uri_query=""))
         self.assertEqual(len(audit), 2)
         result = self.backend.table_restore(
             table_name=backup_table, uri_query=f"restore&primary_key=id",
@@ -778,7 +779,7 @@ class TestSqlBackend(unittest.TestCase):
 
         # cleanup
         self.backend.table_delete(table_name=backup_table, uri_query="")
-        self.backend.table_delete(table_name=f"{backup_table}_audit", uri_query="")
+        self.backend.table_delete(table_name=audit_table(backup_table), uri_query="")
 
 
         # outside the retention period
@@ -792,14 +793,14 @@ class TestSqlBackend(unittest.TestCase):
         target = (datetime.datetime.now() - timedelta(days=2)).isoformat()
         if isinstance(self.backend, SqliteBackend):
             new = json.dumps({"timestamp": target})
-            update_query = f"update {not_backup_table}_audit set data = json_patch(data, '{new}')"
+            update_query = f"update {audit_table(not_backup_table)} set data = json_patch(data, '{new}')"
         elif isinstance(self.backend, PostgresBackend):
-            update_query = f"update {not_backup_table}_audit set data = jsonb_set(data, '{{timestamp}}', '\"{target}\"')"
+            update_query = f"update {audit_table(not_backup_table)} set data = jsonb_set(data, '{{timestamp}}', '\"{target}\"')"
         with self.session_func(self.engine) as session:
             session.execute(update_query)
 
         # should not be able to view audit or restore data
-        audit = list(self.backend.table_select(table_name=f"{not_backup_table}_audit", uri_query=""))
+        audit = list(self.backend.table_select(table_name=audit_table(not_backup_table), uri_query=""))
         self.assertEqual(len(audit), 0)
         result = self.backend.table_restore(
             table_name=not_backup_table, uri_query=f"restore&primary_key=id",
@@ -807,7 +808,7 @@ class TestSqlBackend(unittest.TestCase):
         self.assertEqual(len(result.get("restores")), 0)
 
         # cleanup
-        self.backend.table_delete(table_name=f"{not_backup_table}_audit", uri_query="")
+        self.backend.table_delete(table_name=audit_table(not_backup_table), uri_query="")
 
         # delete without audit
         table_without_audit = "without_audit"
@@ -816,7 +817,7 @@ class TestSqlBackend(unittest.TestCase):
         with pytest.raises((psycopg2.errors.UndefinedTable, sqlite3.OperationalError)):
             audit = list(
                 self.backend.table_select(
-                    table_name=f"{table_without_audit}_audit",
+                    table_name=audit_table(table_without_audit),
                     uri_query="",
                 )
             )
@@ -825,7 +826,7 @@ class TestSqlBackend(unittest.TestCase):
         verbose_table = "table_with_full_audit"
         try:
             self.backend.table_delete(table_name=verbose_table, uri_query="")
-            self.backend.table_delete(table_name=f"{verbose_table}_audit", uri_query="")
+            self.backend.table_delete(table_name=audit_table(verbose_table), uri_query="")
         except Exception:
             pass
         self.backend.table_insert(
@@ -838,12 +839,12 @@ class TestSqlBackend(unittest.TestCase):
         )
         audit = list(
             self.backend.table_select(
-                table_name=f"{verbose_table}_audit",
+                table_name=audit_table(verbose_table),
                 uri_query="",
             )
         )
         self.assertEqual(len(audit), 2)
-        self.backend.table_delete(table_name=f"{verbose_table}_audit", uri_query="")
+        self.backend.table_delete(table_name=audit_table(verbose_table), uri_query="")
 
     def test_all_view(self) -> bool:
         tenant1 = "p11"
