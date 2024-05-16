@@ -25,19 +25,13 @@ PYthon Structured URI Query Language. A library for implementing versioned, quer
 ```python
 import sqlite3
 
-from pysquril.backends import SqliteBackend
+from pysquril.backends import SqliteBackend, sqlite_init
 
 # get a connection pool
-
-def sqlite_init(path: str) -> sqlite3.Connection:
-    engine = sqlite3.connect(path)
-    return engine
-
 # most real world usage would use persistent storage
 engine = sqlite_init(":memory:")
 
-# instantiate a backend, for a given tenant, and identity
-
+# instantiate a backend, for a given tenant, and identityå
 tenant = "tenant1"
 backend = SqliteBackend(
     engine,
@@ -45,6 +39,8 @@ backend = SqliteBackend(
     requestor="some-user",
     requestor_name="Some Person Name",
 )
+
+# add some data
 table = "mytable"
 backend.table_insert(
     table_name=table,

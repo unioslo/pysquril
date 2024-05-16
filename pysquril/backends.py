@@ -18,6 +18,22 @@ import psycopg2.pool
 from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 
+
+def sqlite_init(path: str) -> sqlite3.Connection:
+    engine = sqlite3.connect(path)
+    return engine
+
+
+def postgres_init(dbconfig: dict) -> psycopg2.pool.SimpleConnectionPool:
+    min_conn = 2
+    max_conn = 5
+    dsn = f"dbname={dbconfig['dbname']} user={dbconfig['user']} password={dbconfig['pw']} host={dbconfig['host']}"
+    pool = psycopg2.pool.SimpleConnectionPool(
+        min_conn, max_conn, dsn
+    )
+    return pool
+
+
 @contextmanager
 def sqlite_session(
     engine: sqlite3.Connection,
