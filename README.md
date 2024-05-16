@@ -31,7 +31,7 @@ from pysquril.backends import SqliteBackend, sqlite_init
 # most real world usage would use persistent storage
 engine = sqlite_init(":memory:")
 
-# instantiate a backend, for a given tenant, and identityå
+# instantiate a backend, for a given tenant, and identity
 tenant = "tenant1"
 backend = SqliteBackend(
     engine,
