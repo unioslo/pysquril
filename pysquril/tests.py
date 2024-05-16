@@ -19,7 +19,14 @@ import pytest
 
 from termcolor import colored
 
-from pysquril.backends import SqliteBackend, PostgresBackend, sqlite_session, postgres_session
+from pysquril.backends import (
+    SqliteBackend,
+    PostgresBackend,
+    sqlite_init,
+    postgres_init,
+    sqlite_session,
+    postgres_session,
+)
 from pysquril.exc import ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 from pysquril.parser import (
@@ -32,22 +39,6 @@ from pysquril.parser import (
 )
 from pysquril.test_data import dataset
 
-def sqlite_init(
-    path: str,
-    name: str = 'api-data.db',
-) -> sqlite3.Connection:
-    engine = sqlite3.connect(path + '/' + name)
-    return engine
-
-
-def postgres_init(dbconfig: dict) -> psycopg2.pool.SimpleConnectionPool:
-    min_conn = 2
-    max_conn = 5
-    dsn = f"dbname={dbconfig['dbname']} user={dbconfig['user']} password={dbconfig['pw']} host={dbconfig['host']}"
-    pool = psycopg2.pool.SimpleConnectionPool(
-        min_conn, max_conn, dsn
-    )
-    return pool
 
 TEST_REQUESTOR = "p11-treq"
 TEST_REQUESTOR_NAME = "Test Requestor"
@@ -578,7 +569,7 @@ class TestBackends(object):
 
 
     def test_sqlite(self):
-        engine = sqlite_init('/tmp', name='api-test.db')
+        engine = sqlite_init('/tmp/api-test.db')
         self.run_backend_tests(
             self.data,
             engine,
@@ -884,7 +875,7 @@ class TestSqliteBackend(TestSqlBackend):
     def setUp(self) -> None:
         self.directory = tempfile.gettempdir()
         self.file = f"{__package__}_test.db"
-        self.engine = sqlite_init(self.directory, name=self.file)
+        self.engine = sqlite_init(f"{self.directory}/{self.file}")
         self.backend = SqliteBackend(
             self.engine, requestor=TEST_REQUESTOR, requestor_name=TEST_REQUESTOR_NAME
         )
