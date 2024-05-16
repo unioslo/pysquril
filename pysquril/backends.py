@@ -70,6 +70,15 @@ def postgres_session(
         pool.putconn(engine)
 
 
+def audit_table(table_name: str) -> str:
+    """
+    Construct audit table name from table_name.
+
+    """
+    sep = "_"
+    return f"{table_name}{sep}audit"
+
+
 class AuditTransaction(object):
 
     """
