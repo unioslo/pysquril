@@ -17,7 +17,7 @@ import psycopg2.pool
 
 from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
-from pysquril.utils import audit_table
+from pysquril.utils import audit_table, audit_table_src
 
 def sqlite_init(path: str) -> sqlite3.Connection:
     engine = sqlite3.connect(path)
@@ -272,7 +272,7 @@ class GenericBackend(DatabaseBackend):
         """
         exists = False
         try:
-            current_data = list(self.table_select(table_name.replace("_audit", ""), ""))
+            current_data = list(self.table_select(audit_table_src(table_name), ""))
             exists = True
         except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
             pass
@@ -345,7 +345,7 @@ class GenericBackend(DatabaseBackend):
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc" # sorted from old to new
-        target_data = list(self.table_select(f"{table_name}_audit", uri_query))
+        target_data = list(self.table_select(audit_table(table_name), uri_query))
         if not target_data:
             return work_done # nothing to do
         tsc = AuditTransaction(self.requestor, message, self.requestor_name)
@@ -376,7 +376,7 @@ class GenericBackend(DatabaseBackend):
                     # then it is currently deleted
                     self.table_insert(table_name, target_entry, session)
                     self.table_insert(
-                        f"{table_name}_audit",
+                        audit_table(table_name),
                         tsc.event_restore(diff=target_entry, previous=None, query=uri_query),
                         session,
                     )
@@ -535,7 +535,7 @@ class GenericBackend(DatabaseBackend):
             query = self._query_for_select(table_name, uri_query, data)
         if audit:
             tsc = AuditTransaction(identity=self.requestor, identity_name=self.requestor_name)
-            self.table_insert(f"{table_name}_audit", tsc.event_read(query=uri_query))
+            self.table_insert(audit_table(table_name), tsc.event_read(query=uri_query))
         return self._yield_results(query)
 
     def table_delete(
@@ -562,8 +562,8 @@ class GenericBackend(DatabaseBackend):
         with self._session_func()(self.engine) as session:
             session.execute(sql.delete_query)
             if not table_name.endswith("_audit") and audit:
-                self.table_create(f'{table_name}_audit', session)
-                self.table_insert(f'{table_name}_audit', audit_data, session)
+                self.table_create(audit_table(table_name), session)
+                self.table_insert(audit_table(table_name), audit_data, session)
         if update_all_view:
             self._define_all_view(table_name)
         return True
@@ -587,11 +587,11 @@ class GenericBackend(DatabaseBackend):
             audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
         if session:
             session.execute(sql.update_query)
-            self.table_insert(f'{table_name}_audit', audit_data, session)
+            self.table_insert(audit_table(table_name), audit_data, session)
         else:
             with self._session_func()(self.engine) as session:
                 session.execute(sql.update_query)
-            self.table_insert(f'{table_name}_audit', audit_data)
+            self.table_insert(audit_table(table_name), audit_data)
         return True
 
     def table_alter(self, table_name: str, uri_query: str) -> dict:
@@ -611,7 +611,7 @@ class GenericBackend(DatabaseBackend):
             session.execute(sql.alter_query)
         altered = {"tables": [table_name]}
         try:
-            audit_table_name = f"{table_name}_audit"
+            audit_table_name = audit_table(table_name)
             sql = self.generator_class(
                 f'{self._fqtn(audit_table_name)}',
                 uri_query,
@@ -633,7 +633,7 @@ class GenericBackend(DatabaseBackend):
                 audit_data.append(tsc.event_create(diff=row))
         else:
             audit_data = [tsc.event_create(diff=data)]
-        self.table_insert(f"{table_name}_audit", audit_data)
+        self.table_insert(audit_table(table_name), audit_data)
         return True
 
 
