@@ -64,7 +64,7 @@ where=a=eq.1
 where=a=gt.1
 [{"a": 11, "b": "man", "c": [3, 3, 9], "when": "2024-05-21T10:49:31.227735"}, {"a": 9, "b": "yo", "d": {"e": 4}, "when": "2024-05-22T05:10:11.106601"}]
 
-where=b=eq.'y\'all'
+where=b=eq.'y\\'all'
 [{"a": 0, "b": "y'all"}]
 
 where=b=like.'*all'
@@ -79,7 +79,7 @@ where=x=not.is.null
 where=a=gte.0,and:b=eq.man
 [{"a": 11, "b": "man", "c": [3, 3, 9], "when": "2024-05-21T10:49:31.227735"}]
 
-where=a=eq.1,or:b=eq.'y\'all'
+where=a=eq.1,or:b=eq.'y\\'all'
 [{"a": 1, "b": "yo", "c": [1, 2], "when": "2024-05-20T08:30:01.307111"}, {"a": 0, "b": "y'all"}]
 ```
 
