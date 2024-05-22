@@ -8,17 +8,36 @@ PYthon Structured URI Query Language. A library for implementing versioned, quer
 * Enforces uniqueness on records, otherwise schemaless
 * SQL-like query language
   * features:
-    * filtering (rows and columns/keys)
-    * ordering
-    * pagination
+    * selecting keys
     * aggregation functions
     * group by
+    * filtering rows
+    * ordering
+    * pagination
+  * [Examples](https://github.com/unioslo/pysquril/blob/master/docs/examples.md)
   * [EBNF](https://github.com/unioslo/pysquril/blob/master/docs/grammar.ebnf)
   * [Railroad diagrams](https://unioslo.github.io/pysquril/grammar.html)
+  * [helper class to experiment with queries](https://github.com/unioslo/pysquril/blob/master/pysquril/interactive.py)
+* Ability to apply queries to multiple tables (document sets) simultaneously
 * Audit (with rollback) - who, what, when, why
   * default events: update, delete
   * optional events: create, read
 * PostgreSQL and sqlite database backends
+
+## Getting to know pysquril
+
+Use the helper class to run interactive queries on your own input data:
+
+```txt
+pysquril % poetry run python
+>>> from pysquril.interactive import B
+>>> B().D([{"x": 0, "y": 1}, {"x": 100, "y": 4, "z": [1,2]}]).Q("select=x,z[1]")
+[[0, None], [100, 2]]
+>>> B().D([{"x": 0, "y": 1}, {"x": 100, "y": 4, "z": [1,2]}]).Q("select=x,z[1]&order=x.desc")
+[[100, 2], [0, None]]
+>>> B().D([{"x": 0, "y": 1}, {"x": 100, "y": 4, "z": [1,2]}]).Q("select=x,z[1]&where=y=gt.1")
+[[100, 2]]
+```
 
 ## Example library usage
 
