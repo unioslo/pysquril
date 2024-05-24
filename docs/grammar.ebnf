@@ -1,4 +1,4 @@
-query = select_query | update_query | alter_query ;
+query = select_query | update_query | alter_query | restore_query ;
 select_query = { select_clause } , [ ampersand , where_clause , ampersand , order_clause , ampersand , range_clause ] | [ ampersand , group_by_clause , ampersand , range_clause ], { ampersand , message };
 select_clause = "select=" , select_term , { comma , select_term } ;
 select_term =  { function_call } , select_element ;
@@ -23,6 +23,7 @@ alter_query = alter_clause ;
 alter_clause = "alter=" , 'name' , equals , alter_operation , dot , alter_value ;
 alter_operation = "eq" ;
 alter_value = key_characters ;
+restore_query = "restore", ampersand , "primary_key" , equals , key_characters , { where_clause , message };
 operator = ? eq, gt, gte, lt, lte, neq, like, ilike, not, is, in ? ;
 combinator = and | or ;
 and = "and:" ;
