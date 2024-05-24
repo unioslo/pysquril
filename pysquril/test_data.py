@@ -17,6 +17,7 @@ dataset = [
         'float_str': '3.2',
         'self': 'yes',
         'beneficial': 'yes',
+        'contemplate': 'arising',
     },
     {
         'y': 11,
@@ -50,6 +51,7 @@ dataset = [
         'float': 4.1,
         'self': 'no',
         'beneficial': 'yes',
+        'contemplate': 'vanishing',
     },
     {
         'a': {
@@ -68,6 +70,7 @@ dataset = [
         },
         'self': 'yes',
         'beneficial': 'no',
+        'contemplate': 'non arising',
     },
     {
         'a': {
@@ -87,6 +90,7 @@ dataset = [
         'meh2': '()[],and:,or:. where=;',
         'self': 'no',
         'beneficial': 'no',
+        'contemplate': "g'n niks nie",
     },
     {
         'x': 10,
