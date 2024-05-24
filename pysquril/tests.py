@@ -385,7 +385,12 @@ class TestBackends(object):
         # in
         out = run_select_query('select=d&where=d=in.[string1,string2]')
         assert len(out) == 2
-        assert out == [['string1'], ['string2']]
+        out = run_select_query("select=contemplate&where=contemplate=in.['non arising','vanishing']")
+        assert len(out) == 2
+        assert ['non arising'] in out
+        assert ['vanishing'] in out
+        out = run_select_query("select=contemplate&where=contemplate=in.['g\\'n niks nie','vanishing']")
+        assert len(out) == 2
         # nested key ops
         out = run_select_query('where=a.k1.r2=eq.90')
         assert len(out) == 1
