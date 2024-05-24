@@ -36,6 +36,7 @@ filtering_rows = [
     "where=b=eq.'y\\'all'",
     "where=b=like.'*all'",
     "where=b=in.[yo,man]",
+    "where=b=in.['y\\'all','yo']",
     "where=x=not.is.null",
     "where=a=gte.0,and:b=eq.man",
     "where=a=eq.1,or:b=eq.'y\\'all'",
