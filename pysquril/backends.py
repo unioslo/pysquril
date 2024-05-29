@@ -515,7 +515,7 @@ class GenericBackend(DatabaseBackend):
             dummy_event = AuditTransaction("").event_read(query="")
             result = list(
                 self._yield_results(
-                    f"select data from {table_name} limit 1"
+                    f"select data from {self._fqtn(table_name)} limit 1"
                 )
             )[0]
             sufficient = (
