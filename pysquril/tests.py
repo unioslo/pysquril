@@ -850,6 +850,7 @@ class TestSqlBackend(unittest.TestCase):
             )
         )
         self.assertEqual(len(audit), 2)
+        self.backend.table_delete(table_name=verbose_table, uri_query="")
         self.backend.table_delete(table_name=audit_table(verbose_table), uri_query="")
 
     def test_all_view(self) -> bool:
