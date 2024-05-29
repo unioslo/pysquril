@@ -1,5 +1,5 @@
 
-AUDIT_SEPARATOR = "_"
+AUDIT_SEPARATOR = "/"
 AUDIT_SUFFIX = "audit"
 
 def audit_table(table_name: str) -> str:
