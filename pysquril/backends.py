@@ -1,4 +1,3 @@
-
 import datetime
 import json
 import logging
@@ -209,7 +208,13 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
-    def table_delete(self, table_name: str, uri_query: str, audit: bool = True) -> bool:
+    def table_delete(
+        self,
+        table_name: str,
+        uri_query: str,
+        audit: bool = True,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
         pass
 
     @abstractmethod
@@ -575,6 +580,7 @@ class GenericBackend(DatabaseBackend):
         uri_query: str,
         update_all_view: Optional[bool] = False,
         audit: bool = True,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> bool:
         """
         Delete the intended data from the table if a uri_query
@@ -590,11 +596,17 @@ class GenericBackend(DatabaseBackend):
             tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
             for row in self.table_select(table_name, uri_query):
                 audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
-        with self._session_func()(self.engine) as session:
+        if session:
             session.execute(sql.delete_query)
             if not table_name.endswith("_audit") and audit:
                 self.table_create(audit_table(table_name), session)
                 self.table_insert(audit_table(table_name), audit_data, session)
+        else:
+            with self._session_func()(self.engine) as session:
+                session.execute(sql.delete_query)
+                if not table_name.endswith("_audit") and audit:
+                    self.table_create(audit_table(table_name), session)
+                    self.table_insert(audit_table(table_name), audit_data, session)
         if update_all_view:
             self._define_all_view(table_name)
         return True
