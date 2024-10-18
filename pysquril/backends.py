@@ -592,19 +592,20 @@ class GenericBackend(DatabaseBackend):
         """
         audit_data = []
         sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
+        is_audit_table = self._is_audit_table(table_name)
         if audit:
             tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
             for row in self.table_select(table_name, uri_query):
                 audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
         if session:
             session.execute(sql.delete_query)
-            if not table_name.endswith("_audit") and audit:
+            if not is_audit_table and audit:
                 self.table_create(audit_table(table_name), session)
                 self.table_insert(audit_table(table_name), audit_data, session)
         else:
             with self._session_func()(self.engine) as session:
                 session.execute(sql.delete_query)
-                if not table_name.endswith("_audit") and audit:
+                if not is_audit_table and audit:
                     self.table_create(audit_table(table_name), session)
                     self.table_insert(audit_table(table_name), audit_data, session)
         if update_all_view:
