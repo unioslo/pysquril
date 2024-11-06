@@ -19,6 +19,7 @@ from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedEr
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 from pysquril.utils import audit_table, audit_table_src, AUDIT_SEPARATOR, AUDIT_SUFFIX
 
+
 def sqlite_init(path: str) -> sqlite3.Connection:
     engine = sqlite3.connect(path)
     return engine
@@ -28,9 +29,7 @@ def postgres_init(dbconfig: dict) -> psycopg2.pool.SimpleConnectionPool:
     min_conn = 2
     max_conn = 5
     dsn = f"dbname={dbconfig['dbname']} user={dbconfig['user']} password={dbconfig['pw']} host={dbconfig['host']}"
-    pool = psycopg2.pool.SimpleConnectionPool(
-        min_conn, max_conn, dsn
-    )
+    pool = psycopg2.pool.SimpleConnectionPool(min_conn, max_conn, dsn)
     return pool
 
 
@@ -41,14 +40,12 @@ def sqlite_session(
     session = engine.cursor()
     try:
         yield session
-        session.close()
+        engine.commit()
     except Exception as e:
-        session.close()
         engine.rollback()
         raise e
     finally:
         session.close()
-        engine.commit()
 
 
 @contextmanager
@@ -59,19 +56,16 @@ def postgres_session(
     session = engine.cursor()
     try:
         yield session
-        session.close()
+        session.commit()
     except Exception as e:
-        session.close()
         engine.rollback()
         raise e
     finally:
         session.close()
-        engine.commit()
         pool.putconn(engine)
 
 
 class AuditTransaction(object):
-
     """
     Container for generating audit events.
     Keeps state for transaction IDs, generates
@@ -145,7 +139,7 @@ class AuditTransaction(object):
 
 class DatabaseBackend(ABC):
 
-    sep: str # schema separator character
+    sep: str  # schema separator character
     generator_class: Union[SqliteQueryGenerator, PostgresQueryGenerator]
     json_object_func: str
 
@@ -237,7 +231,6 @@ class DatabaseBackend(ABC):
 
 
 class GenericBackend(DatabaseBackend):
-
     """Implementation of common methods for specific backends."""
 
     def _session_func(self) -> Callable:
@@ -350,10 +343,10 @@ class GenericBackend(DatabaseBackend):
         # fetch the desired state
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
-        uri_query = f"{uri_query}&order=timestamp.asc" # sorted from old to new
+        uri_query = f"{uri_query}&order=timestamp.asc"  # sorted from old to new
         target_data = list(self.table_select(audit_table(table_name), uri_query))
         if not target_data:
-            return work_done # nothing to do
+            return work_done  # nothing to do
         tsc = AuditTransaction(self.requestor, message, self.requestor_name)
         session_func = self._session_func()
         try:
@@ -361,13 +354,21 @@ class GenericBackend(DatabaseBackend):
             with session_func(self.engine) as session:
                 self.table_create(table_name, session)
         except psycopg2.errors.DuplicateObject as e:
-            pass # already exists
+            pass  # already exists
         handled = []
         with session_func(self.engine) as session:
             for entry in target_data:
                 target_entry = entry.get("previous")
-                pk_value = self._get_pk_value(primary_key, target_entry) if target_entry else None
-                if pk_value in handled or entry.get("event") in ["restore", "create", "read"]:
+                pk_value = (
+                    self._get_pk_value(primary_key, target_entry)
+                    if target_entry
+                    else None
+                )
+                if pk_value in handled or entry.get("event") in [
+                    "restore",
+                    "create",
+                    "read",
+                ]:
                     continue
                 target_entry = entry.get("previous")
                 result = list(
@@ -377,13 +378,17 @@ class GenericBackend(DatabaseBackend):
                     )
                 )
                 if len(result) > 1:
-                    raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
+                    raise DataIntegrityError(
+                        f"primary_key: {primary_key} is not unique"
+                    )
                 elif not result:
                     # then it is currently deleted
                     self.table_insert(table_name, target_entry, session)
                     self.table_insert(
                         audit_table(table_name),
-                        tsc.event_restore(diff=target_entry, previous=None, query=uri_query),
+                        tsc.event_restore(
+                            diff=target_entry, previous=None, query=uri_query
+                        ),
                         session,
                     )
                     work_done["restores"].append(entry)
@@ -424,7 +429,12 @@ class GenericBackend(DatabaseBackend):
         """
         raise NotImplementedError
 
-    def _fqtn(self, table_name: str, schema_name: Optional[str] = None, no_schema: bool = False) -> str:
+    def _fqtn(
+        self,
+        table_name: str,
+        schema_name: Optional[str] = None,
+        no_schema: bool = False,
+    ) -> str:
         """
         Return a fully qualified table name - qualified with the schema.
 
@@ -462,10 +472,8 @@ class GenericBackend(DatabaseBackend):
         """
         tables = self._tables_in_schemas(table_name)
         if not tables:
-            return # when the last one is deleted
-        unions = " union all ".join(
-            [f"select * from {t}" for t in tables]
-        )
+            return  # when the last one is deleted
+        unions = " union all ".join([f"select * from {t}" for t in tables])
         view_name = self._fqtn(table_name, schema_name="all")
         session_func = self._session_func()
         with session_func(self.engine) as session:
@@ -487,9 +495,11 @@ class GenericBackend(DatabaseBackend):
         """
         backup_cutoff = None
         if apply_cutoff:
-            backup_cutoff = (datetime.date.today() - timedelta(days=self.backup_days)).isoformat()
+            backup_cutoff = (
+                datetime.date.today() - timedelta(days=self.backup_days)
+            ).isoformat()
         sql = self.generator_class(
-            f'{self._fqtn(table_name)}',
+            f"{self._fqtn(table_name)}",
             uri_query,
             data=data,
             backup_cutoff=backup_cutoff,
@@ -497,14 +507,18 @@ class GenericBackend(DatabaseBackend):
         )
         return sql.select_query
 
-    def _query_for_select_many(self, uri_query: str, tables: list, apply_cutoff: bool = False) -> str:
+    def _query_for_select_many(
+        self, uri_query: str, tables: list, apply_cutoff: bool = False
+    ) -> str:
         queries = []
         for table_name in tables:
-            sql = self._query_for_select(table_name, uri_query, array_agg=True, apply_cutoff=apply_cutoff)
+            sql = self._query_for_select(
+                table_name, uri_query, array_agg=True, apply_cutoff=apply_cutoff
+            )
             queries.append(f"select {self.json_object_func}('{table_name}', ({sql}))")
         return " union all ".join(queries)
 
-    def _yield_results(self, query: str)-> Iterable[tuple]:
+    def _yield_results(self, query: str) -> Iterable[tuple]:
         raise NotImplementedError
 
     def _is_audit_table(self, table_name: str) -> bool:
@@ -560,17 +574,27 @@ class GenericBackend(DatabaseBackend):
             and self.backup_days is not None
         )
         if "*" in table_name:
-            tables = self.tables_list(exclude_endswith = exclude_endswith, table_like=table_name)
+            tables = self.tables_list(
+                exclude_endswith=exclude_endswith, table_like=table_name
+            )
             if not tables:
                 return iter([])
-            query = self._query_for_select_many(uri_query, tables, apply_cutoff=apply_cutoff)
-        elif "," in  table_name:
+            query = self._query_for_select_many(
+                uri_query, tables, apply_cutoff=apply_cutoff
+            )
+        elif "," in table_name:
             tables = table_name.split(",")
-            query = self._query_for_select_many(uri_query, tables, apply_cutoff=apply_cutoff)
+            query = self._query_for_select_many(
+                uri_query, tables, apply_cutoff=apply_cutoff
+            )
         else:
-            query = self._query_for_select(table_name, uri_query, data, apply_cutoff=apply_cutoff)
+            query = self._query_for_select(
+                table_name, uri_query, data, apply_cutoff=apply_cutoff
+            )
         if audit:
-            tsc = AuditTransaction(identity=self.requestor, identity_name=self.requestor_name)
+            tsc = AuditTransaction(
+                identity=self.requestor, identity_name=self.requestor_name
+            )
             self.table_insert(audit_table(table_name), tsc.event_read(query=uri_query))
         return self._yield_results(query)
 
@@ -591,12 +615,14 @@ class GenericBackend(DatabaseBackend):
 
         """
         audit_data = []
-        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query)
+        sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
         is_audit_table = self._is_audit_table(table_name)
         if audit:
             tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
             for row in self.table_select(table_name, uri_query):
-                audit_data.append(tsc.event_delete(diff=None, previous=row, query=uri_query))
+                audit_data.append(
+                    tsc.event_delete(diff=None, previous=row, query=uri_query)
+                )
         if session:
             session.execute(sql.delete_query)
             if not is_audit_table and audit:
@@ -627,10 +653,16 @@ class GenericBackend(DatabaseBackend):
         if self._is_audit_table(table_name):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         audit_data = []
-        sql = self.generator_class(f'{self._fqtn(table_name)}', uri_query, data=data)
-        tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name) if not tsc else tsc
+        sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
+        tsc = (
+            AuditTransaction(self.requestor, sql.message, self.requestor_name)
+            if not tsc
+            else tsc
+        )
         for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(tsc.event_update(diff=data, previous=val, query=uri_query))
+            audit_data.append(
+                tsc.event_update(diff=data, previous=val, query=uri_query)
+            )
         if session:
             session.execute(sql.update_query)
             self.table_insert(audit_table(table_name), audit_data, session)
@@ -649,7 +681,7 @@ class GenericBackend(DatabaseBackend):
         if self._is_audit_table(table_name):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(
-            f'{self._fqtn(table_name)}',
+            f"{self._fqtn(table_name)}",
             uri_query,
             table_name_func=self._fqtn,
         )
@@ -659,7 +691,7 @@ class GenericBackend(DatabaseBackend):
         try:
             audit_table_name = audit_table(table_name)
             sql = self.generator_class(
-                f'{self._fqtn(audit_table_name)}',
+                f"{self._fqtn(audit_table_name)}",
                 uri_query,
                 table_name_func=self._fqtn,
                 audit=True,
@@ -672,7 +704,9 @@ class GenericBackend(DatabaseBackend):
         return altered
 
     def _audit_insert(self, table_name: str, data: Union[str, list]) -> bool:
-        tsc = AuditTransaction(identity=self.requestor, identity_name=self.requestor_name)
+        tsc = AuditTransaction(
+            identity=self.requestor, identity_name=self.requestor_name
+        )
         audit_data = []
         if type(data) is list:
             for row in data:
@@ -684,7 +718,6 @@ class GenericBackend(DatabaseBackend):
 
 
 class SqliteBackend(GenericBackend):
-
     """
     This backend works reliably, and offers decent read-write
     performance to API clients under the following conditions:
@@ -717,7 +750,7 @@ class SqliteBackend(GenericBackend):
     """
 
     generator_class = SqliteQueryGenerator
-    json_object_func = 'json_object'
+    json_object_func = "json_object"
 
     def __init__(
         self,
@@ -731,7 +764,7 @@ class SqliteBackend(GenericBackend):
     ) -> None:
         self.engine = engine
         self.verbose = verbose
-        self.table_definition = '(data json unique not null)'
+        self.table_definition = "(data json unique not null)"
         self.schema = schema if schema else ""
         self.sep = "_" if self.schema else ""
         self.requestor = requestor
@@ -742,7 +775,12 @@ class SqliteBackend(GenericBackend):
     def _session_func(self) -> Callable:
         return sqlite_session
 
-    def _fqtn(self, table_name: str, schema_name: Optional[str] = None, no_schema: bool = False) -> str:
+    def _fqtn(
+        self,
+        table_name: str,
+        schema_name: Optional[str] = None,
+        no_schema: bool = False,
+    ) -> str:
         """
         Return a fully qualified table name - qualified with the schema.
 
@@ -762,11 +800,13 @@ class SqliteBackend(GenericBackend):
                     and name like '{self.schema_pattern}%{table_name}'
                 """
             ).fetchall()
-        return [ r[0] for r in res ] if res else []
+        return [r[0] for r in res] if res else []
 
-    def _create_all_view(self, view_name: str, unions: str, session: sqlite3.Cursor) -> None:
-        session.execute(f'drop view if exists {view_name}')
-        session.execute(f'create view {view_name} as {unions}')
+    def _create_all_view(
+        self, view_name: str, unions: str, session: sqlite3.Cursor
+    ) -> None:
+        session.execute(f"drop view if exists {view_name}")
+        session.execute(f"create view {view_name} as {unions}")
 
     def initialise(self) -> Optional[bool]:
         pass
@@ -808,7 +848,9 @@ class SqliteBackend(GenericBackend):
         table_name: str,
         session: sqlite3.Cursor,
     ) -> bool:
-        session.execute(f'create table if not exists {self._fqtn(table_name)} {self.table_definition}')
+        session.execute(
+            f"create table if not exists {self._fqtn(table_name)} {self.table_definition}"
+        )
         return True
 
     def table_insert(
@@ -821,7 +863,7 @@ class SqliteBackend(GenericBackend):
     ) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into {self._fqtn(table_name)} (data) values (?)'
+            insert_stmt = f"insert into {self._fqtn(table_name)} (data) values (?)"
             target = []
             if dtype is list:
                 for element in data:
@@ -847,26 +889,25 @@ class SqliteBackend(GenericBackend):
                 self._audit_insert(table_name, data)
             return True
         except sqlite3.IntegrityError as e:
-            logging.info('Ignoring duplicate row')
-            return True # idempotent PUT
+            logging.info("Ignoring duplicate row")
+            return True  # idempotent PUT
         except sqlite3.ProgrammingError as e:
-            logging.error('Syntax error?')
+            logging.error("Syntax error?")
             raise e
         except sqlite3.OperationalError as e:
-            logging.error('Database issue')
+            logging.error("Database issue")
             raise e
         except Exception as e:
-            logging.error('Not sure what went wrong')
+            logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(self, query: str)-> Iterable[tuple]:
+    def _yield_results(self, query: str) -> Iterable[tuple]:
         with sqlite_session(self.engine) as session:
             for row in session.execute(query):
                 yield json.loads(row[0])
 
 
 class PostgresBackend(GenericBackend):
-
     """
     A PostgreSQL backend. PostgreSQL is a full-fledged
     client-server relational DB, implementing MVCC for
@@ -882,7 +923,7 @@ class PostgresBackend(GenericBackend):
 
     generator_class = PostgresQueryGenerator
     sep = "."
-    json_object_func = 'jsonb_build_object'
+    json_object_func = "jsonb_build_object"
 
     def __init__(
         self,
@@ -896,8 +937,8 @@ class PostgresBackend(GenericBackend):
     ) -> None:
         self.engine = pool
         self.verbose = verbose
-        self.table_definition = '(data jsonb not null, uniq text unique not null)'
-        self.schema = schema if schema else 'public'
+        self.table_definition = "(data jsonb not null, uniq text unique not null)"
+        self.schema = schema if schema else "public"
         self.requestor = requestor
         self.requestor_name = requestor_name
         self.backup_days = backup_days
@@ -906,7 +947,12 @@ class PostgresBackend(GenericBackend):
     def _session_func(self) -> Callable:
         return postgres_session
 
-    def _fqtn(self, table_name: str, schema_name: Optional[str] = None, no_schema: bool = False) -> str:
+    def _fqtn(
+        self,
+        table_name: str,
+        schema_name: Optional[str] = None,
+        no_schema: bool = False,
+    ) -> str:
         """
         Return a fully qualified table name - qualified with the schema.
 
@@ -914,7 +960,7 @@ class PostgresBackend(GenericBackend):
         if no_schema:
             return f'"{table_name}"'
         schema = schema_name or self.schema
-        schema = '"all"' if schema == "all" else schema # all is a reserved word
+        schema = '"all"' if schema == "all" else schema  # all is a reserved word
         return f'{schema}{self.sep}"{table_name}"'
 
     def _tables_in_schemas(self, table_name: str) -> list:
@@ -931,9 +977,11 @@ class PostgresBackend(GenericBackend):
                 """
             )
             res = session.fetchall()
-        return [ r[0] for r in res ] if res else []
+        return [r[0] for r in res] if res else []
 
-    def _create_all_view(self, view_name: str, unions: str, session: psycopg2.extensions.cursor) -> None:
+    def _create_all_view(
+        self, view_name: str, unions: str, session: psycopg2.extensions.cursor
+    ) -> None:
         session.execute(f'create schema if not exists "all"')
         session.execute(f"create or replace view {view_name} as {unions}")
 
@@ -941,9 +989,9 @@ class PostgresBackend(GenericBackend):
         try:
             with postgres_session(self.engine) as session:
                 for stmt in self.generator_class.db_init_sql:
-                        session.execute(stmt)
+                    session.execute(stmt)
         except psycopg2.InternalError as e:
-            pass # throws a tuple concurrently updated when restarting many processes
+            pass  # throws a tuple concurrently updated when restarting many processes
         return True
 
     def tables_list(
@@ -985,21 +1033,20 @@ class PostgresBackend(GenericBackend):
         table_name: str,
         session: psycopg2.extensions.cursor,
     ) -> bool:
-        table_create = f'create table if not exists {self._fqtn(table_name)}{self.table_definition}'
+        table_create = f"create table if not exists {self._fqtn(table_name)}{self.table_definition}"
         trigger_create = f"""
             create trigger ensure_unique_data before insert
             on {self.schema}{self.sep}"{table_name}"
             for each row execute procedure unique_data()
-        """ # change to create if not exists when pg ^v11
-        session.execute( # need to check if table exists
+        """  # change to create if not exists when pg ^v11
+        session.execute(  # need to check if table exists
             f"select exists(select from pg_tables where schemaname = '{self.schema}' and tablename = '{table_name}')"
         )
         exists = session.fetchall()[0][0]
         if not exists:
-            session.execute(f'create schema if not exists {self.schema}')
+            session.execute(f"create schema if not exists {self.schema}")
             session.execute(table_create)
             session.execute(trigger_create)
-
 
     def table_insert(
         self,
@@ -1011,7 +1058,7 @@ class PostgresBackend(GenericBackend):
     ) -> bool:
         try:
             dtype = type(data)
-            insert_stmt = f'insert into {self._fqtn(table_name)} (data) values (%s)'
+            insert_stmt = f"insert into {self._fqtn(table_name)} (data) values (%s)"
             target = []
             if dtype is list:
                 for element in data:
@@ -1037,19 +1084,19 @@ class PostgresBackend(GenericBackend):
                 self._audit_insert(table_name, data)
             return True
         except psycopg2.IntegrityError as e:
-            logging.info('Ignoring duplicate row')
-            return True # idempotent PUT
+            logging.info("Ignoring duplicate row")
+            return True  # idempotent PUT
         except psycopg2.ProgrammingError as e:
-            logging.error('Syntax error?')
+            logging.error("Syntax error?")
             raise e
         except psycopg2.OperationalError as e:
-            logging.error('Database issue')
+            logging.error("Database issue")
             raise e
         except Exception as e:
-            logging.error('Not sure what went wrong')
+            logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(self, query: str)-> Iterable[tuple]:
+    def _yield_results(self, query: str) -> Iterable[tuple]:
         with postgres_session(self.engine) as session:
             session.execute(query)
             for row in session:
