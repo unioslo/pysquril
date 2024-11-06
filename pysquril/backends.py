@@ -56,7 +56,7 @@ def postgres_session(
     session = engine.cursor()
     try:
         yield session
-        session.commit()
+        engine.commit()
     except Exception as e:
         engine.rollback()
         raise e
