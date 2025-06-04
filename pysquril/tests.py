@@ -32,6 +32,7 @@ from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 from pysquril.parser import (
     SelectClause,
     WhereClause,
+    SetClause,
     GroupByTerm,
     GroupByClause,
     AlterClause,
@@ -135,6 +136,16 @@ class TestParser(object):
         q = UriQuery("table", "where=a=eq.'g\\'n mooi dag buite'")
         assert q.where.original == "a=eq.'g\\'n mooi dag buite'"
         assert q.where.parsed[0].parsed[0].val == "g''n mooi dag buite"
+
+
+    def test_update(self) -> None:
+        set_clause = SetClause("set=k")
+
+        with pytest.raises(ParseError):
+            SetClause("set=a[1]")
+
+        with pytest.raises(ParseError):
+            SetClause("set=a.k.v")
 
 
 class TestBackends(object):
