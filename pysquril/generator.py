@@ -3,7 +3,6 @@ import json
 
 from typing import Union, Callable, Optional, Any
 
-from pysquril.exc import ParseError
 from pysquril.parser import (
     Key,
     ArraySpecific,
