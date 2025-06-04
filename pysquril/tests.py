@@ -697,10 +697,6 @@ class TestSqlBackend(unittest.TestCase):
         self.assertEqual(audit_event["identity_name"], TEST_REQUESTOR_NAME)
 
         # restore updates
-        with self.assertRaises(ParseError): # missing restore directive
-            self.backend.table_restore(table_name=test_table, uri_query="")
-        with self.assertRaises(ParseError): # missing primary key
-            self.backend.table_restore(table_name=test_table, uri_query="restore")
         with self.assertRaises(ParseError): # still missing primary key
             self.backend.table_restore(table_name=test_table, uri_query="restore&primary_key=")
 

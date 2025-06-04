@@ -314,21 +314,22 @@ class GenericBackend(DatabaseBackend):
 
         """
         work_done = {"restores": [], "updates": []}
-        # ensure we have enough information
+
         query_parts = uri_query.split("&")
-        if not query_parts:
-            raise ParseError("Missing query")
-        if "restore" not in query_parts:
-            raise ParseError("Missing restore directive")
+        if not query_parts or "restore" not in query_parts:
+            return work_done
+
+        # ensure we have enough information
+        sql = self.generator_class(
+            "", uri_query
+        )
+        message = sql.message
         has_pk = False
-        message = ""
         for part in query_parts:
             if part.startswith("primary_key="):
                 primary_key = part.split("=")[-1]
                 if primary_key != "":
                     has_pk = True
-            if part.startswith("message="):
-                message = unquote(part.split("=")[-1])
         if not has_pk:
             raise ParseError("Missing primary_key")
         # fetch a copy of the current state, and all primay keys
