@@ -45,7 +45,7 @@ class SqlGenerator(object):
         self.table_name = table_name
         self.uri_query = uri_query
         self.data = data
-        self.parsed_uri_query = UriQuery(table_name, uri_query)
+        self.parsed_uri_query = UriQuery(table_name, uri_query, data)
         self.table_name_func = table_name_func
         self.operators = {
             'eq': '=',
@@ -486,8 +486,6 @@ class SqliteQueryGenerator(SqlGenerator):
 
     def _gen_sql_update(self, term: SetTerm) -> str:
         key = term.parsed[0].select_term.bare_term
-        if not self.data or key not in self.data.keys():
-            raise ParseError(f'Target key of update: {key} not found in payload')
         new = json.dumps(self.data).replace("'", "''")
         return f"set data = json_patch(data, '{new}')"
 
@@ -669,8 +667,6 @@ class PostgresQueryGenerator(SqlGenerator):
 
     def _gen_sql_update(self, term: SetTerm) -> str:
         key = term.parsed[0].select_term.bare_term
-        if not self.data or key not in self.data.keys():
-            raise ParseError(f'Target key of update: {key} not found in payload')
         val = json.dumps(self.data[key]).replace("'", "''") # to handle single quotes inside
         return f" set data = jsonb_set(data, '{{{key}}}', ('{val}')::jsonb)"
 
