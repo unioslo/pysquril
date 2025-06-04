@@ -411,9 +411,9 @@ class Message(object):
 
     def __init__(self, original: str) -> None:
         self.original = original
-        self.parsed = self.parse_message(original)
+        self.parsed = self.parse(original)
 
-    def parse_message(self, message: str) -> str:
+    def parse(self, message: str) -> str:
         out = ""
         if unquote(message) != message:
             out = unquote(message)
