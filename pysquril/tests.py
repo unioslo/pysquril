@@ -110,6 +110,14 @@ class TestParser(object):
         c = GroupByClause("a.b.c,d")
         assert len(c.split_clause()) == 2
 
+        # cannot order a group by
+        with pytest.raises(ParseError):
+            UriQuery("table", "select=self,x,count(*)&group_by=self,x&order=x.desc")
+
+        # keys used in group by must appear in select
+        with pytest.raises(ParseError):
+            UriQuery("table", "select=self,count(*)&group_by=self,x")
+
     def test_alter(self) -> None:
 
         c = AlterClause("name=eq.new_name")
@@ -500,11 +508,6 @@ class TestBackends(object):
         out = run_select_query('select=self,beneficial,count(*)&group_by=self,beneficial')
         assert len(out) == 4
 
-        with pytest.raises(ParseError):
-            run_select_query('select=self,x,count(*)&group_by=self,x&order=x.desc')
-
-        with pytest.raises(ParseError):
-            run_select_query('select=self,count(*)&group_by=self,x')
 
         # UPDATE
         if verbose:
