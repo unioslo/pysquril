@@ -147,13 +147,21 @@ class TestParser(object):
 
 
     def test_update(self) -> None:
-        set_clause = SetClause("set=k")
+
+        set_clause = SetClause("k", {"k": 9})
+
+        # key in payload
 
         with pytest.raises(ParseError):
-            SetClause("set=a[1]")
+            SetClause("x", {})
+
+        # only keys
 
         with pytest.raises(ParseError):
-            SetClause("set=a.k.v")
+            SetClause("set=a[1]", {"a": [1]})
+
+        with pytest.raises(ParseError):
+            SetClause("set=a.k.v", {"a": {"k": {"v": 1}}})
 
 
 class TestBackends(object):
@@ -523,8 +531,6 @@ class TestBackends(object):
         out = run_select_query('where=a.k1.r2=eq.80')
         assert len(out) == 1
         assert out[0]['a']['k1']['r2'] == 80
-        with pytest.raises(ParseError):
-            out = run_update_query('set=x&where=x=eq.1', data={})
 
         # multiple keys
         out = run_update_query(

@@ -305,9 +305,10 @@ class Clause(object):
 
     term_class = None
 
-    def __init__(self, original: str) -> None:
+    def __init__(self, original: str, data: Optional[dict] = None) -> None:
         self.original = original
         self.parsed = self.parse_terms()
+        self.data = data
         self._enforce_constraints()
 
     def split_clause(self) -> list:
@@ -367,6 +368,14 @@ class RangeClause(Clause):
 
 class SetClause(Clause):
     term_class = SetTerm
+
+    def _enforce_constraints(self) -> None:
+        if not self.data:
+            raise ParseError("set clause requires a payload")
+        for term in self.parsed:
+            key = term.parsed[0].select_term.bare_term
+            if key not in self.data.keys():
+                raise ParseError(f'Target key of update: {key} not found in payload')
 
 class GroupByClause(Clause):
     term_class = SelectTerm
@@ -434,7 +443,7 @@ class UriQuery(object):
         self.where = self.parse_clause(prefix='where=', Cls=WhereClause)
         self.order = self.parse_clause(prefix='order=', Cls=OrderClause)
         self.range = self.parse_clause(prefix='range=', Cls=RangeClause)
-        self.set = self.parse_clause(prefix='set=', Cls=SetClause)
+        self.set = self.parse_clause(prefix='set=', Cls=SetClause, data=data)
         self.alter = self.parse_clause(prefix='alter=', Cls=AlterClause)
         self.group_by = self.parse_clause(prefix='group_by=', Cls=GroupByClause)
         self.message = self.parse_message()
@@ -502,13 +511,13 @@ class UriQuery(object):
                 positions.append(idx)
         return positions
 
-    def parse_clause(self, *, prefix: str, Cls: Clause) -> Clause:
+    def parse_clause(self, *, prefix: str, Cls: Clause, data: Optional[dict] = None) -> Clause:
         parts = self._slice(
             target=self.original, positions=self._index_clauses(self.original)
         )
         for part in parts:
             if part.startswith(prefix):
-                return Cls(part[len(prefix):])
+                return Cls(part[len(prefix):], data)
 
     def parse_message(self) -> str:
         prefix = "message="
