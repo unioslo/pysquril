@@ -470,11 +470,6 @@ class SqliteQueryGenerator(SqlGenerator):
             else:
                 target = select_term.bare_term
         else:
-            if not (
-                isinstance(select_term.parsed[0], Key) or
-                isinstance(select_term.parsed[0], ArraySpecific)
-            ):
-                raise ParseError(f'Unsupported where term: {term.original}')
             if isinstance(select_term.parsed[0], ArraySpecific):
                 target = select_term.original
             else:
@@ -638,11 +633,6 @@ class PostgresQueryGenerator(SqlGenerator):
                 target = self._gen_select_target(select_term.bare_term)
                 col = f"data{final_select_op}'{{{target}}}'"
         else:
-            if not (
-                isinstance(select_term.parsed[0], Key) or
-                isinstance(select_term.parsed[0], ArraySpecific)
-            ):
-                raise ParseError(f'Unsupported where term: {term.original}')
             if isinstance(select_term.parsed[0], ArraySpecific):
                 target = self._gen_select_target(select_term.bare_term)
                 _idx = select_term.parsed[0].idx

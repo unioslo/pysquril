@@ -360,6 +360,17 @@ class SelectClause(Clause):
 class WhereClause(Clause):
     term_class = WhereTerm
 
+    def _enforce_constraints(self) -> None:
+        for term in self.parsed:
+            for element in term.parsed:
+                for base_element in element.select_term.parsed:
+                    if (
+                        isinstance(base_element, ArrayBroadcastSingle) or
+                        isinstance(base_element, ArraySpecificMultiple) or
+                        isinstance(base_element, ArrayBroadcastMultiple)
+                    ):
+                        raise ParseError(f"Unsupported where term: {base_element.element}")
+
 class OrderClause(Clause):
     term_class = OrderTerm
 

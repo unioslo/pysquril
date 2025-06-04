@@ -89,6 +89,17 @@ class TestParser(object):
         where_element = where_term.parsed[0]
         assert where_element.val == "''n kat loop oor die pad"
 
+        # unsupported elements - nonsensical queries
+
+        with pytest.raises(ParseError):
+            WhereClause("x[*|a]=eq.1")
+
+        with pytest.raises(ParseError):
+            WhereClause("x[1|a,x]=eq.1")
+
+        with pytest.raises(ParseError):
+            WhereClause("x[*|a,x]=eq.1")
+
 
     def test_group_by(self) -> None:
 
