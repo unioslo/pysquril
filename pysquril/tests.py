@@ -175,6 +175,15 @@ class TestParser(object):
             SetClause("set=a.k.v", {"a": {"k": {"v": 1}}})
 
 
+    def test_restore(self) -> None:
+
+        with pytest.raises(ParseError):
+            UriQuery("", "restore&primary_key=")
+
+        with pytest.raises(ParseError):
+            UriQuery("", "restore")
+
+
 class TestBackends(object):
 
     verbose = True
@@ -697,8 +706,6 @@ class TestSqlBackend(unittest.TestCase):
         self.assertEqual(audit_event["identity_name"], TEST_REQUESTOR_NAME)
 
         # restore updates
-        with self.assertRaises(ParseError): # still missing primary key
-            self.backend.table_restore(table_name=test_table, uri_query="restore&primary_key=")
 
         # restore to a specific state, for a specific row
         message = "undoing mistakes"

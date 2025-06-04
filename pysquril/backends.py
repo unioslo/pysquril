@@ -15,7 +15,7 @@ import psycopg2
 import psycopg2.extensions
 import psycopg2.pool
 
-from pysquril.exc import DataIntegrityError, ParseError, OperationNotPermittedError
+from pysquril.exc import DataIntegrityError, OperationNotPermittedError
 from pysquril.generator import SqliteQueryGenerator, PostgresQueryGenerator
 from pysquril.utils import audit_table, audit_table_src, AUDIT_SEPARATOR, AUDIT_SUFFIX
 
@@ -324,14 +324,8 @@ class GenericBackend(DatabaseBackend):
             "", uri_query
         )
         message = sql.message
-        has_pk = False
-        for part in query_parts:
-            if part.startswith("primary_key="):
-                primary_key = part.split("=")[-1]
-                if primary_key != "":
-                    has_pk = True
-        if not has_pk:
-            raise ParseError("Missing primary_key")
+        primary_key = sql.parsed_uri_query.primary_key
+
         # fetch a copy of the current state, and all primay keys
         table_exists = False
         try:

@@ -461,6 +461,7 @@ class UriQuery(object):
         self.alter = self.parse_clause(prefix='alter=', Cls=AlterClause)
         self.group_by = self.parse_clause(prefix='group_by=', Cls=GroupByClause)
         self.message = self.parse_message()
+        self.primary_key = self.parse_primary_key()
         if self.group_by:
             if self.order:
                 raise ParseError("ordering not supported for group_by")
@@ -537,3 +538,15 @@ class UriQuery(object):
             if part.startswith(prefix):
                 message = Message(part[len(prefix):]).parsed
         return message
+
+    def parse_primary_key(self) -> str:
+        pk = None
+        if "restore" not in self.original:
+            return pk
+        prefix = "primary_key="
+        for part in self.parts:
+            if part.startswith(prefix):
+                pk = part.split("=")[-1]
+        if not pk:
+            raise ParseError("Missing primary_key")
+        return pk
