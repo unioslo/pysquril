@@ -449,6 +449,9 @@ class UriQuery(object):
     ) -> None:
         self.table_name = table_name
         self.original = uri_query
+        self.parts = self._slice(
+            target=self.original, positions=self._index_clauses(self.original)
+        )
         self.data = data
         self.select = self.parse_clause(prefix='select=', Cls=SelectClause)
         self.where = self.parse_clause(prefix='where=', Cls=WhereClause)
@@ -523,20 +526,14 @@ class UriQuery(object):
         return positions
 
     def parse_clause(self, *, prefix: str, Cls: Clause, data: Optional[dict] = None) -> Clause:
-        parts = self._slice(
-            target=self.original, positions=self._index_clauses(self.original)
-        )
-        for part in parts:
+        for part in self.parts:
             if part.startswith(prefix):
                 return Cls(part[len(prefix):], data)
 
     def parse_message(self) -> str:
         prefix = "message="
         message = None
-        parts = self._slice(
-            target=self.original, positions=self._index_clauses(self.original)
-        )
-        for part in parts:
+        for part in self.parts:
             if part.startswith(prefix):
                 message = Message(part[len(prefix):]).parsed
         return message
