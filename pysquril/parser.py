@@ -381,8 +381,10 @@ class SetClause(Clause):
     term_class = SetTerm
 
     def _enforce_constraints(self) -> None:
-        if not self.data:
+        if self.data is None:
             raise ParseError("set clause requires a payload")
+        if self.data == {}:
+            raise ParseError("empty payload")
         for term in self.parsed:
             key = term.parsed[0].select_term.bare_term
             if key not in self.data.keys():
