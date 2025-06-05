@@ -161,10 +161,18 @@ class TestParser(object):
 
         set_clause = SetClause("k", {"k": 9})
 
-        # key in payload
+        # empty payload
+
+        with pytest.raises(ParseError):
+            SetClause("x", None)
 
         with pytest.raises(ParseError):
             SetClause("x", {})
+
+        # key in payload
+
+        with pytest.raises(ParseError):
+            SetClause("x", {"a": 1})
 
         # only keys
 
