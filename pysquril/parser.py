@@ -385,10 +385,11 @@ class SetClause(Clause):
             raise ParseError("set clause requires a payload")
         if self.data == {}:
             raise ParseError("empty payload")
-        for term in self.parsed:
-            key = term.parsed[0].select_term.bare_term
-            if key not in self.data.keys():
-                raise ParseError(f'Target key of update: {key} not found in payload')
+        if self.data:
+            for term in self.parsed:
+                key = term.parsed[0].select_term.bare_term
+                if key not in self.data.keys():
+                    raise ParseError(f'Target key of update: {key} not found in payload')
 
 class GroupByClause(Clause):
     term_class = SelectTerm
