@@ -380,16 +380,25 @@ class RangeClause(Clause):
 class SetClause(Clause):
     term_class = SetTerm
 
+    def _bare_terms(self) -> list:
+        out = []
+        for term in self.parsed:
+            out.append(term.parsed[0].select_term.bare_term)
+        return out
+
     def _enforce_constraints(self) -> None:
         if self.data is None:
+            for key in self._bare_terms():
+                if key.startswith("-"):
+                    return
             raise ParseError("set clause requires a payload")
         if self.data == {}:
             raise ParseError("empty payload")
         if self.data:
-            for term in self.parsed:
-                key = term.parsed[0].select_term.bare_term
+            for key in self._bare_terms():
                 if key not in self.data.keys():
                     raise ParseError(f'Target key of update: {key} not found in payload')
+
 
 class GroupByClause(Clause):
     term_class = SelectTerm
