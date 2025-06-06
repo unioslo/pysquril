@@ -656,8 +656,8 @@ class PostgresQueryGenerator(SqlGenerator):
 
     def _gen_sql_update(self, term: SetTerm) -> str:
         key = term.parsed[0].select_term.bare_term
-        val = json.dumps(self.data[key]).replace("'", "''") # to handle single quotes inside
-        return f"set data = data || '{{\"{key}\": {val}}}'::jsonb"
+        new = json.dumps(self.data).replace("'", "''") # to handle single quotes inside
+        return f"set data = data || '{new}'::jsonb"
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         return f"(select * from {self.table_name} where data->>'timestamp' >= '{backup_cutoff}')a"
