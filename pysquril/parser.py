@@ -382,15 +382,21 @@ class SetClause(Clause):
 
     def _bare_terms(self) -> list:
         out = []
-        for term in self.parsed:
-            out.append(term.parsed[0].select_term.bare_term)
+        try:
+            for term in self.parsed:
+                out.append(term.parsed[0].select_term.bare_term)
+        except Exception:
+            pass # nothing to handle
         return out
 
     def _enforce_constraints(self) -> None:
+        key_removal = False
+        for key in self._bare_terms():
+            if key.startswith("-"):
+                key_removal = True
         if self.data is None:
-            for key in self._bare_terms():
-                if key.startswith("-"):
-                    return
+            if key_removal:
+                return
             raise ParseError("set clause requires a payload")
         if self.data == {}:
             raise ParseError("empty payload")
