@@ -236,22 +236,50 @@ class GenericBackend(DatabaseBackend):
     def _session_func(self) -> Callable:
         raise NotImplementedError
 
-    def _diff_entries(self, current_entry: dict, target_entry: dict) -> dict:
+    # need to pass in which case is being handled
+    def _diff_entries(self, current_entry: dict, target_entry: dict) -> tuple:
         """
         Calculate the difference between two dictionaries, show the difference
-        between the previous relative to current entry. E.g.:
+        between the current relative to target entry (desired state).
 
-        _diff_entries({a: 3, b: 4}, {a: 3, b: 5}) -> {b: 5}
+        _diff_entries(current, target) -> (to_change, to_remove, to_add)
 
-        The diff is recorded in the new audit log when moving the state
-        from current to previous.
+        Returns keys/values to be:
+
+        - kept and changed
+        - removed
+        - added
+
+        ... in order to move from current to target.
+
+        E.g.:
+
+        _diff_entries({a: 3, b: 4}, {a: 3, b: 5}) -> ({b: 5}, _     , _     )
+        _diff_entries({a: 3, b: 4}, {a: 3}      ) -> (_     , {b: 4}, _     )
+        _diff_entries({a: 3}      , {a: 3, c: 9}) -> (_     , _     , {c: 9})
 
         """
-        out = {}
+
+        to_change = {}
+        to_remove = {}
+        to_add = {}
+
+        # differences between keys that are present in both
         for k, v in target_entry.items():
-            if current_entry.get(k) != v:
-                out[k] = v
-        return out
+            if k in current_entry and current_entry.get(k) != v:
+                to_change[k] = v
+
+        # keys present in current but not in target
+        for k, v in current_entry.items():
+            if k not in target_entry.keys():
+                to_remove[k] = v
+
+        # keys not present in current but in target
+        for k, v in target_entry.items():
+            if k not in current_entry.keys():
+                to_add[k] = v
+
+        return (to_change, to_remove, to_add)
 
     def _get_pk_value(self, primary_key: str, entry: dict) -> Any:
         keys = primary_key.split(".")
@@ -389,14 +417,28 @@ class GenericBackend(DatabaseBackend):
                     work_done["restores"].append(entry)
                 else:
                     current_entry = result[0]
-                    diff = self._diff_entries(current_entry, target_entry)
-                    if diff:
+                    to_change, to_remove, to_add = self._diff_entries(current_entry, target_entry)
+                    if to_change or to_add:
                         # note: query construction depends on the constraint
                         # that only top-level keys are allowed in set operations
+                        keys = set(to_change.keys()).union(to_add.keys())
+                        to_change.update(to_add)
+                        set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
                         self.table_update(
                             table_name,
-                            f"set={','.join(diff.keys())}&where={primary_key}=eq.{pk_value}",
-                            data=diff,
+                            set_query,
+                            data=to_change,
+                            tsc=tsc,
+                            session=session,
+                        )
+                        work_done["updates"].append(entry)
+                    if to_remove:
+                        keys = list(map(lambda x: f"-{x}", to_remove.keys()))
+                        set_query = f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
+                        self.table_update(
+                            table_name,
+                            set_query,
+                            data=None,
                             tsc=tsc,
                             session=session,
                         )
