@@ -22,6 +22,7 @@ from termcolor import colored
 from pysquril.backends import (
     SqliteBackend,
     PostgresBackend,
+    GenericBackend,
     sqlite_init,
     postgres_init,
     sqlite_session,
@@ -45,6 +46,47 @@ from pysquril.utils import audit_table, AUDIT_SEPARATOR, AUDIT_SUFFIX
 TEST_REQUESTOR = "p11-treq"
 TEST_REQUESTOR_NAME = "Test Requestor"
 AUDIT_END = f"{AUDIT_SEPARATOR}{AUDIT_SUFFIX}"
+
+
+class DummyBackend(GenericBackend):
+    def initialise(self) -> None:
+        pass
+    def table_create(self) -> None:
+        pass
+    def table_insert(self) -> None:
+        pass
+    def tables_list(self) -> None:
+        pass
+
+class TestGenericBackend(object):
+
+    def test_diff_entries(self) -> None:
+
+        be = DummyBackend(None)
+
+        current = {"a": 1, "c": 4}
+        target = {"a": 2, "b": 3}
+
+        to_change = {"a": 2}
+        to_remove = {"c": 4}
+        to_add = {"b": 3}
+
+        diff = be._diff_entries(current, target)
+        assert diff == (to_change, to_remove, to_add)
+
+        # apply calculated changes
+
+        for k, v in to_change.items():
+            current[k] = v
+
+        for k, v in to_remove.items():
+            current.pop(k)
+
+        for k, v in to_add.items():
+            current[k] = v
+
+        assert current == {"a": 2, "b": 3}
+
 
 class TestParser(object):
 
@@ -913,6 +955,80 @@ class TestSqlBackend(unittest.TestCase):
         self.assertEqual(len(audit), 2)
         self.backend.table_delete(table_name=verbose_table, uri_query="")
         self.backend.table_delete(table_name=audit_table(verbose_table), uri_query="")
+
+        # rolling back updates which add new keys
+        test_add_key_table = "add_key"
+        data_inital = {"id": 0, "a": 1}
+        data_additional = {"b": 2}
+
+        try:
+            self.backend.table_delete(table_name=test_add_key_table, uri_query="")
+            self.backend.table_delete(table_name=audit_table(test_add_key_table), uri_query="")
+        except Exception:
+            pass
+
+        self.backend.table_insert(table_name=test_add_key_table, data=data_inital)
+
+        self.backend.table_update(
+            table_name=test_add_key_table,
+            uri_query=f"set=b&where=a=eq.1",
+            data=data_additional,
+        )
+
+        # check the audit
+        result = self.backend.table_restore(
+            table_name=test_add_key_table,
+            uri_query=f"restore&primary_key=id&where=event=eq.update"
+        )
+        assert len(result.get("updates")) == 1
+
+        out = list(
+            self.backend.table_select(
+                table_name=test_add_key_table,
+                uri_query=""
+            )
+        )
+        assert out == [data_inital]
+
+        self.backend.table_delete(table_name=test_add_key_table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(test_add_key_table), uri_query="")
+
+        # rolling back updates which remove existing keys
+
+        test_remove_key_table = "remove_key"
+        data_inital = {"id": 0, "a": 1, "b": 2}
+        data_removed = {"id": 0, "a": 1}
+
+        try:
+            self.backend.table_delete(table_name=test_remove_key_table, uri_query="")
+            self.backend.table_delete(table_name=audit_table(test_remove_key_table), uri_query="")
+        except Exception:
+            pass
+
+        self.backend.table_insert(table_name=test_remove_key_table, data=data_inital)
+
+        self.backend.table_update(
+            table_name=test_remove_key_table,
+            uri_query=f"set=-b&where=id=eq.0",
+            data=None,
+        )
+
+        result = self.backend.table_restore(
+            table_name=test_remove_key_table,
+            uri_query=f"restore&primary_key=id&where=event=eq.update"
+        )
+        assert len(result.get("updates")) == 1
+
+        out = list(
+            self.backend.table_select(
+                table_name=test_remove_key_table,
+                uri_query=""
+            )
+        )
+        assert out == [data_inital]
+
+        self.backend.table_delete(table_name=test_remove_key_table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(test_remove_key_table), uri_query="")
 
     def test_all_view(self) -> bool:
         tenant1 = "p11"
