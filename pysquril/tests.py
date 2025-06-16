@@ -226,6 +226,11 @@ class TestParser(object):
         with pytest.raises(ParseError):
             SetClause("set=a.k.v", {"a": {"k": {"v": 1}}})
 
+        # removal constraints
+
+        with pytest.raises(ParseError):
+            SetClause("set=-a,b", {"b": 1})
+
 
     def test_restore(self) -> None:
 

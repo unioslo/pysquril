@@ -390,18 +390,21 @@ class SetClause(Clause):
         return out
 
     def _enforce_constraints(self) -> None:
-        key_removal = False
-        for key in self._bare_terms():
+        key_removals = 0
+        bare_terms = self._bare_terms()
+        for key in bare_terms:
             if key.startswith("-"):
-                key_removal = True
+                key_removals += 1
+        if key_removals > 0 and len(bare_terms) != key_removals:
+            raise ParseError("Cannot remove a key while editing other keys")
         if self.data is None:
-            if key_removal:
+            if key_removals:
                 return
             raise ParseError("set clause requires a payload")
         if self.data == {}:
             raise ParseError("empty payload")
         if self.data:
-            for key in self._bare_terms():
+            for key in bare_terms:
                 if key not in self.data.keys():
                     raise ParseError(f'Target key of update: {key} not found in payload')
 
