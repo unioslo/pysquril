@@ -637,22 +637,27 @@ class TestBackends(object):
         assert len(out) == 1
         assert out[0][0] == 'this _has_ \'quotes\''
 
-        # Adding a new top-level key via update
+        # Adding new top-level keys via update
         out = run_update_query(
-            'set=newkey&where=float=eq.3.1',
-            data={"newkey": "a-lovely-value"},
+            'set=newkey,another&where=float=eq.3.1',
+            data={"newkey": "a-lovely-value", "another": 1},
         )
         out = run_select_query('select=newkey&where=float=eq.3.1')
         assert len(out) == 1
         assert out[0][0] == "a-lovely-value"
 
-        # Removing a top-level key
+        out = run_select_query('select=another&where=float=eq.3.1')
+        assert len(out) == 1
+        assert out[0][0] == 1
+
+        # Removing top-level keys
         out = run_update_query(
-            'set=-newkey&where=float=eq.3.1',
+            'set=-newkey,-another&where=float=eq.3.1',
             data=None,
         )
         out = run_select_query('where=float=eq.3.1')
         assert "newkey" not in out[0].keys()
+        assert "another" not in out[0].keys()
 
         # DELETE
         if verbose:
