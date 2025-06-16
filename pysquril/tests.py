@@ -231,6 +231,10 @@ class TestParser(object):
         with pytest.raises(ParseError):
             SetClause("set=-a,b", {"b": 1})
 
+        # replacement
+
+        SetClause("*", {"new": "data"})
+
 
     def test_restore(self) -> None:
 
@@ -400,18 +404,18 @@ class TestBackends(object):
             print('\n===> FUNCTIONS\n')
 
         out = run_select_query('select=count(1)')
-        assert out == [[5]]
+        assert out == [[len(dataset)]]
         out = run_select_query('select=count(*)')
-        assert out == [[5]]
+        assert out == [[len(dataset)]]
         out = run_select_query('select=count(x)')
         assert out == [[4]]
         out = run_select_query('select=count(1),min(y)')
-        assert out == [[5, 1]]
+        assert out == [[len(dataset), 1]]
         out = run_select_query('select=count(1),avg(x),min(y),sum(x),max_ts(timestamp)')
-        assert out == [[5, 526.2500000000000000, 1, 2105, '2020-10-14T20:20:34.388511']]
+        assert out == [[len(dataset), 526.2500000000000000, 1, 2105, '2020-10-14T20:20:34.388511']]
         # nested selections
         out = run_select_query('select=count(a.k1.r2),count(x),count(*)')
-        assert out == [[2, 4, 5]]
+        assert out == [[2, 4, len(dataset)]]
         # array selections
         out = run_select_query('select=count(b[0])')
         assert out == [[2]]
@@ -430,21 +434,21 @@ class TestBackends(object):
 
         # broadcasting aggregations
         out = list(db.table_select('*', 'select=count(1)', exclude_endswith = [AUDIT_END, '_metadata']))
-        assert out == [{'another_table': [5]}, {'test_table': [5]}]
+        assert out == [{'another_table': [len(dataset)]}, {'test_table': [len(dataset)]}]
 
         # fuzzy matching
         out = list(db.table_select('another*', 'select=count(1)', exclude_endswith = [AUDIT_END, '_metadata']))
-        assert out == [{'another_table': [5]}]
+        assert out == [{'another_table': [len(dataset)]}]
 
         out = list(db.table_select('*_table', 'select=count(1)', exclude_endswith = [AUDIT_END, '_metadata']))
-        assert out == [{'another_table': [5]}, {'test_table': [5]}]
+        assert out == [{'another_table': [len(dataset)]}, {'test_table': [len(dataset)]}]
 
         # broadcasting queries without aggregation
         out = list(db.table_select('*', 'select=x', exclude_endswith = [AUDIT_END, '_metadata']))
         assert out is not None
         assert len(out) == 2
-        assert len(out[0].get("another_table")) == 5
-        assert len(out[1].get("test_table")) == 5
+        assert len(out[0].get("another_table")) == len(dataset)
+        assert len(out[1].get("test_table")) == len(dataset)
 
         out = list(db.table_select('*', 'select=x,y&where=z=not.is.null', exclude_endswith = [AUDIT_END, '_metadata']))
         assert out is not None
@@ -572,9 +576,9 @@ class TestBackends(object):
         out = run_select_query('select=x,a&where=a.k3[0|h]=not.is.null&order=a.k3[0|h].desc')
         assert out[0][0] == 107
         # timestamps
-        out = run_select_query('select=x,timestamp&order=timestamp.desc')
+        out = run_select_query('select=x,timestamp&order=timestamp.desc&where=timestamp=not.is.null')
         assert out[0][1] == '2020-10-14T20:20:34.388511'
-        out = run_select_query('select=x,timestamp&order=timestamp.asc')
+        out = run_select_query('select=x,timestamp&order=timestamp.asc&where=timestamp=not.is.null')
         assert out[0][1] == '2020-10-13T10:15:26.388573'
 
         # RANGE
@@ -588,9 +592,9 @@ class TestBackends(object):
         # GROUP BY
         if verbose:
             print('\n===> GROUP BY\n')
-        out = run_select_query('select=self,count(*)&group_by=self')
+        out = run_select_query('select=self,count(*)&group_by=self&where=self=not.is.null')
         assert len(out) == 2
-        out = run_select_query('select=self,beneficial,count(*)&group_by=self,beneficial')
+        out = run_select_query('select=self,beneficial,count(*)&group_by=self,beneficial&where=self=not.is.null')
         assert len(out) == 4
 
 
@@ -658,6 +662,14 @@ class TestBackends(object):
         out = run_select_query('where=float=eq.3.1')
         assert "newkey" not in out[0].keys()
         assert "another" not in out[0].keys()
+
+        # replacing a whole entry
+        fh = {"plant": "fiddlehead", "taste": "complex", "season": "april"}
+        out = run_update_query(
+            "set=*&where=plant=like.'ground*'", data=fh,
+        )
+        out = run_select_query("where=plant=not.is.null")
+        assert out == [fh]
 
         # DELETE
         if verbose:
