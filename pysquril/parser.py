@@ -405,7 +405,7 @@ class SetClause(Clause):
             raise ParseError("empty payload")
         if self.data:
             for key in bare_terms:
-                if key not in self.data.keys():
+                if key not in self.data.keys() and key != "*":
                     raise ParseError(f'Target key of update: {key} not found in payload')
 
 
