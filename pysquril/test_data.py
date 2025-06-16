@@ -110,6 +110,7 @@ dataset = [
     {
         'plant': 'ground elder',
         'taste': 'bitter',
-        'season': 'apr - sept'
+        'season': 'apr - sept',
+        'note': 'best to get them young',
     }
 ]

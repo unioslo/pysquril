@@ -669,7 +669,7 @@ class TestBackends(object):
             "set=*&where=plant=like.'ground*'", data=fh,
         )
         out = run_select_query("where=plant=not.is.null")
-        assert out == [fh]
+        assert out == [fh] # 'note' key no longer present
 
         # DELETE
         if verbose:
