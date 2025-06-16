@@ -675,6 +675,13 @@ class GenericBackend(DatabaseBackend):
             self._define_all_view(table_name)
         return True
 
+    def _do_update(
+        self,
+        session: Union[sqlite3.Cursor, psycopg2.extensions.cursor],
+        query: str,
+    ) -> None:
+        raise NotImplementedError
+
     def table_update(
         self,
         table_name: str,
@@ -701,11 +708,11 @@ class GenericBackend(DatabaseBackend):
                 tsc.event_update(diff=data, previous=val, query=uri_query)
             )
         if session:
-            session.execute(sql.update_query)
+            self._do_update(session, sql.update_query)
             self.table_insert(audit_table(table_name), audit_data, session)
         else:
             with self._session_func()(self.engine) as session:
-                session.execute(sql.update_query)
+                self._do_update(session, sql.update_query)
             self.table_insert(audit_table(table_name), audit_data)
         return True
 
@@ -943,6 +950,9 @@ class SqliteBackend(GenericBackend):
             for row in session.execute(query):
                 yield json.loads(row[0])
 
+    def _do_update(self, session: sqlite3.Cursor, query: str) -> None:
+        session.executescript(query)
+
 
 class PostgresBackend(GenericBackend):
     """
@@ -1138,3 +1148,6 @@ class PostgresBackend(GenericBackend):
             session.execute(query)
             for row in session:
                 yield row[0]
+
+    def _do_update(self, session: psycopg2.extensions.cursor, query: str) -> None:
+        session.execute(query)
