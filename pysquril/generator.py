@@ -479,12 +479,14 @@ class SqliteQueryGenerator(SqlGenerator):
         return col
 
     def _gen_sql_update(self, term: SetTerm) -> str:
+        key = term.parsed[0].select_term.bare_term
         if not self.data: # removing a key
-            key = term.parsed[0].select_term.bare_term
             target = key[1:] # remove minus
             new = f"{{{target}: null}}"
         else:
             new = json.dumps(self.data).replace("'", "''")
+            if key == "*":
+                return f"set data = '{new}'"
         return f"set data = json_patch(data, '{new}')"
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
@@ -659,12 +661,14 @@ class PostgresQueryGenerator(SqlGenerator):
         return col
 
     def _gen_sql_update(self, term: SetTerm) -> str:
+        key = term.parsed[0].select_term.bare_term
         if not self.data: # removing a key
-            key = term.parsed[0].select_term.bare_term
             target = key[1:] # remove minus
             return f"set data = data - '{{{target}}}'::text[]"
         else:
             new = json.dumps(self.data).replace("'", "''") # to handle single quotes inside
+            if key == "*":
+                return f"set data = '{new}'::jsonb"
             return f"set data = data || '{new}'::jsonb"
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
