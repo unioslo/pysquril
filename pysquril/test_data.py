@@ -106,5 +106,10 @@ dataset = [
         'beneficial': 'yes',
         'being': 'arising&vanishing',
         'loop': "g'n kat oor die pad",
+    },
+    {
+        'plant': 'ground elder',
+        'taste': 'bitter',
+        'season': 'apr - sept'
     }
 ]
