@@ -284,11 +284,6 @@ class SetElement(object):
 
     def __init__(self, term: str) -> None:
         self.select_term = SelectTerm(term)
-        if not isinstance(self.select_term.parsed[0], Key):
-            raise ParseError(f'{term} must be an instance of Key')
-        if not len(self.select_term.parsed) == 1:
-            # note: relaxing this would require changes to table_restore
-            raise ParseError(f'SetElements can only be top level keys - {term} is nested')
 
 
 class SetTerm(object):
@@ -389,6 +384,17 @@ class SetClause(Clause):
             pass # nothing to handle
         return out
 
+    def _has_unsupported_term(self, terms: list) -> bool:
+        has_unsupported = False
+        for term in terms:
+            if (
+                isinstance(term, ArrayBroadcastSingle)
+                or isinstance(term, ArrayBroadcastMultiple)
+                or isinstance(term, ArraySpecificMultiple)
+            ):
+                has_unsupported = True
+        return has_unsupported
+
     def _enforce_constraints(self) -> None:
         key_removals = 0
         bare_terms = self._bare_terms()
@@ -404,8 +410,15 @@ class SetClause(Clause):
         if self.data == {}:
             raise ParseError("empty payload")
         if self.data:
-            for key in bare_terms:
-                if key not in self.data.keys() and key != "*":
+            for key, set_term in zip(bare_terms, self.parsed):
+                terms = set_term.parsed[0].select_term.parsed
+                if self._has_unsupported_term(terms):
+                    raise ParseError(f"{key} not supported in updates")
+                if (
+                    key != "*"
+                    and isinstance(self.data, dict)
+                    and key not in self.data.keys()
+                ):
                     raise ParseError(f'Target key of update: {key} not found in payload')
 
 
