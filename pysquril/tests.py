@@ -235,6 +235,27 @@ class TestParser(object):
 
         SetClause("*", {"new": "data"})
 
+        # nested updates
+
+        # supported
+
+        SetClause("a.b", "3")
+
+        SetClause("a.b.c[1]", "2")
+
+        SetClause("a[1|h]", "1")
+
+        # not supported
+
+        with pytest.raises(ParseError):
+            SetClause("a[*|h]", "1")
+
+        with pytest.raises(ParseError):
+            SetClause("a[1|h,j]", "1")
+
+        with pytest.raises(ParseError):
+            SetClause("a[*|h,j]", "1")
+
 
     def test_restore(self) -> None:
 
