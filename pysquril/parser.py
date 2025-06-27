@@ -418,6 +418,8 @@ class SetClause(Clause):
                     key != "*"
                     and isinstance(self.data, dict)
                     and key not in self.data.keys()
+                    and len(terms) == 1
+                    and isinstance(terms[0], Key)
                 ):
                     raise ParseError(f'Target key of update: {key} not found in payload')
 
