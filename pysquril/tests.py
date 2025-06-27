@@ -218,14 +218,6 @@ class TestParser(object):
         with pytest.raises(ParseError):
             SetClause("x", {"a": 1})
 
-        # only keys
-
-        with pytest.raises(ParseError):
-            SetClause("set=a[1]", {"a": [1]})
-
-        with pytest.raises(ParseError):
-            SetClause("set=a.k.v", {"a": {"k": {"v": 1}}})
-
         # removal constraints
 
         with pytest.raises(ParseError):
@@ -244,6 +236,8 @@ class TestParser(object):
         SetClause("a.b.c[1]", "2")
 
         SetClause("a[1|h]", "1")
+
+        SetClause("a[1]", 1)
 
         # not supported
 
@@ -626,13 +620,16 @@ class TestBackends(object):
         out = run_select_query('select=x&where=x=eq.999')
         assert out[0][0] == 999
         assert len(out) == 3
+
+        new_entry = {'a': {'k1': {'r1': [33, 200], 'r2': 80 }}}
         out = run_update_query(
             'set=a&where=a.k1.r2=eq.90',
-            data={'a': {'k1': {'r1': [33, 200], 'r2': 80 }}},
+            data=new_entry,
         )
         out = run_select_query('where=a.k1.r2=eq.80')
         assert len(out) == 1
         assert out[0]['a']['k1']['r2'] == 80
+        assert out[0]['a'] == new_entry['a'] # ensure whole entry replaced
 
         # multiple keys
         out = run_update_query(
@@ -691,6 +688,29 @@ class TestBackends(object):
         )
         out = run_select_query("where=plant=not.is.null")
         assert out == [fh] # 'note' key no longer present
+
+
+        # Nested updates
+
+        for val in [91, "a string", {"zzz": 0}, [1,2]]:
+
+            out = run_update_query(
+                "set=a.k1.r2&where=z=eq.10", data=val
+            )
+            out = run_select_query("where=z=eq.10")
+            assert out[0]["a"]["k1"]["r2"] == val
+
+            out = run_update_query(
+                "set=b[0]&where=lol1=eq.456", data=val
+            )
+            out = run_select_query("where=lol1=eq.456")
+            assert out[0]["b"][0] == val
+
+            out = run_update_query(
+                "set=q.r[0|s]&where=z=eq.10", data=val
+            )
+            out = run_select_query("where=z=eq.10")
+            assert out[0]["q"]["r"][0]["s"] == val
 
         # DELETE
         if verbose:
