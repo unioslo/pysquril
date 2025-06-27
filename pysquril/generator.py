@@ -479,15 +479,41 @@ class SqliteQueryGenerator(SqlGenerator):
         return col
 
     def _gen_sql_update(self, term: SetTerm) -> str:
-        key = term.parsed[0].select_term.bare_term
+        select_term = term.parsed[0].select_term
+        inner_most_selection = select_term.parsed[-1]
+        key = select_term.bare_term
+        if (
+            len(select_term.parsed) > 1
+            or isinstance(inner_most_selection, ArraySpecificSingle)
+            or isinstance(inner_most_selection, ArraySpecific)
+        ):
+            if isinstance(inner_most_selection, ArraySpecificSingle):
+                key = select_term.bare_term
+                idx = select_term.parsed[-1].idx
+                col = select_term.parsed[-1].sub_selections[0]
+                selector = f'{key}[{idx}].{col}'
+            elif isinstance(inner_most_selection, ArraySpecific):
+                idx = select_term.parsed[-1].idx
+                selector = f"{key}[{idx}]"
+            else:
+                selector = key
+            new = json.dumps(self.data).replace("'", "''")
+            return f"set data = json_set(data, '$.{selector}', json('{new}'))"
         if not self.data: # removing a key
             target = key[1:] # remove minus
             new = f"{{{target}: null}}"
+            return f"set data = json_patch(data, '{new}')"
         else:
-            new = json.dumps(self.data).replace("'", "''")
             if key == "*":
+                new = json.dumps(self.data).replace("'", "''")
                 return f"set data = '{new}'"
-        return f"set data = json_patch(data, '{new}')"
+            else:
+                target = self.data.get(key)
+                if isinstance(target, int):
+                    return f"set data = json_set(data, '$.{key}', {target})"
+                else:
+                    new = json.dumps(target).replace("'", "''")
+                    return f"set data = json_set(data, '$.{key}', json('{new}'))"
 
     def _gen_select_with_retention(self, backup_cutoff: str) -> str:
         return f"(select * from {self.table_name} where json_extract(data, '$.timestamp') >= '{backup_cutoff}')a"
@@ -661,7 +687,26 @@ class PostgresQueryGenerator(SqlGenerator):
         return col
 
     def _gen_sql_update(self, term: SetTerm) -> str:
-        key = term.parsed[0].select_term.bare_term
+        select_term = term.parsed[0].select_term
+        inner_most_selection = select_term.parsed[-1]
+        key = select_term.bare_term
+        if (
+            len(select_term.parsed) > 1
+            or isinstance(inner_most_selection, ArraySpecificSingle)
+            or isinstance(inner_most_selection, ArraySpecific)
+        ):
+            keys = ",".join(key.split("."))
+            if isinstance(inner_most_selection, ArraySpecificSingle):
+                idx = select_term.parsed[-1].idx
+                col = select_term.parsed[-1].sub_selections[0]
+                selector = f'{{{keys},{idx},{col}}}'
+            elif isinstance(inner_most_selection, ArraySpecific):
+                idx = select_term.parsed[-1].idx
+                selector = f"{{{keys},{idx}}}"
+            else:
+                selector = f"{{{keys}}}"
+            new = json.dumps(self.data).replace("'", "''")
+            return f"set data = jsonb_set(data, '{selector}', '{new}')"
         if not self.data: # removing a key
             target = key[1:] # remove minus
             return f"set data = data - '{{{target}}}'::text[]"
