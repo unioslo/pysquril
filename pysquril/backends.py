@@ -25,9 +25,11 @@ def sqlite_init(path: str) -> sqlite3.Connection:
     return engine
 
 
-def postgres_init(dbconfig: dict) -> psycopg2.pool.SimpleConnectionPool:
-    min_conn = 2
-    max_conn = 5
+def postgres_init(
+    dbconfig: dict,
+    min_conn: int = 1,
+    max_conn: int = 5,
+) -> psycopg2.pool.SimpleConnectionPool:
     dsn = f"dbname={dbconfig['dbname']} user={dbconfig['user']} password={dbconfig['pw']} host={dbconfig['host']}"
     pool = psycopg2.pool.SimpleConnectionPool(min_conn, max_conn, dsn)
     return pool
