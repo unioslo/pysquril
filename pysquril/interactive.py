@@ -96,3 +96,22 @@ class B(object):
         )
         print(result)
         return query, result
+
+    def U(self, query: str, data: Optional[dict] = None) -> tuple:
+        """
+        Run an update query, print the results,
+        return the query and the results.
+
+        """
+        if self.verbose:
+            print(query)
+        self.backend.table_update(
+            table_name=self.table_name, uri_query=query, data=data,
+        )
+        result = list(
+            self.backend.table_select(
+                table_name=self.table_name, uri_query="",
+            )
+        )
+        print(result)
+        return query, result
