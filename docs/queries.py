@@ -56,6 +56,15 @@ pagination = [
     "range=2.3",
 ]
 
+updates = [
+    ("set=a&where=b=eq.yo", {"a": 2}),
+    ("set=a,b&where=b=eq.man", {"a": 12, "b": "gah"}),
+    ("set=d&where=a=eq.0", {"d": {"f": 999}}),
+    ("set=d.f&where=a=eq.0", 888),
+    ("set=-d", None),
+    ("set=*&where=when=eq.'2024-05-20T08:30:01.307111'", {"a": 1, "b": "yo"}),
+]
+
 together = [
     {
         "queries": selecting_keys,
@@ -81,6 +90,10 @@ together = [
         "queries": pagination,
         "title": "## Pagination",
     },
+    {
+        "updates": updates,
+        "title": "## Updates",
+    }
 ]
 
 def generate_report(queries: dict, data: list, filename: str) -> None:
@@ -93,11 +106,18 @@ def generate_report(queries: dict, data: list, filename: str) -> None:
         for query_set in queries:
             f.write(f'\n{query_set.get("title")}\n\n')
             f.write("```txt\n")
-            for query in query_set.get("queries"):
-                query, result = B(verbose=True).D(data).Q(query)
-                f.write(f"\n{query}\n")
-                f.write(json.dumps(result))
-                f.write("\n")
+            if queries := query_set.get("queries"):
+                for query in queries:
+                    query, result = B(verbose=True).D(data).Q(query)
+                    f.write(f"\n{query}\n")
+                    f.write(json.dumps(result))
+                    f.write("\n")
+            if updates := query_set.get("updates"):
+                for update, target_data in updates:
+                    query, result = B(verbose=True).D(data).U(update, target_data)
+                    f.write(f"\n{query} {target_data}\n")
+                    f.write(json.dumps(result))
+                    f.write("\n")
             f.write('```\n')
 
 if __name__ == '__main__':
