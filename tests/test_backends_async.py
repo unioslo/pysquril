@@ -1091,3 +1091,24 @@ class TestAsyncPostgresBackend(AsyncTestSqlBackend):
         await test_runner.run_async_backend_tests(
             test_runner.data, self.backend, PostgresQueryGenerator, test_runner.verbose
         )
+
+
+@pytest.mark.asyncio
+async def test_async_postgres_init_no_deprecation_warning(async_postgres_config):
+    """async_postgres_init should not open the pool implicitly."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pool = await async_postgres_init(async_postgres_config)
+        async with pool.connection() as conn:
+            await conn.execute("SELECT 1")
+
+    try:
+        assert not any(
+            issubclass(w.category, RuntimeWarning)
+            and "constructor is deprecated" in str(w.message)
+            for w in caught
+        )
+    finally:
+        await pool.close()

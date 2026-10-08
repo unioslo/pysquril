@@ -15,6 +15,7 @@ Contains:
 - Asynchronous connection initialization and session management for SQLite/PostgreSQL
 """
 
+import inspect
 import sqlite3
 from contextlib import contextmanager, asynccontextmanager
 from typing import ContextManager, AsyncContextManager
@@ -190,7 +191,14 @@ async def async_postgres_init(
     if 'port' in dbconfig and dbconfig['port']:
         conn_params["port"] = dbconfig['port']
 
-    pool = AsyncConnectionPool(kwargs=conn_params, min_size=min_conn, max_size=max_conn)
+    pool_kwargs = {"kwargs": conn_params, "min_size": min_conn, "max_size": max_conn}
+    # open=False avoids the deprecation RuntimeWarning that AsyncConnectionPool
+    # emits when the pool opens itself in the constructor. Only pass it if the
+    # installed AsyncConnectionPool accepts the argument, as it could be removed
+    # once opening the pool in the constructor is dropped.
+    if "open" in inspect.signature(AsyncConnectionPool).parameters:
+        pool_kwargs["open"] = False
+    pool = AsyncConnectionPool(**pool_kwargs)
     await pool.open()
     return pool
 
