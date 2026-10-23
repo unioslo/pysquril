@@ -184,16 +184,28 @@ class DatabaseBackend(ABC):
         table_name: str,
         uri_query: str,
         data: Optional[Union[dict, list]] = None,
+        exclude_endswith: list = [],
         audit: bool = False,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> Iterable[tuple]:
         pass
 
     @abstractmethod
-    def table_restore(self, table_name: str, uri_query: str) -> bool:
+    def table_restore(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
         pass
 
     @abstractmethod
-    def table_alter(self, table_name: str, uri_query: str) -> dict:
+    def table_alter(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         pass
 
 
