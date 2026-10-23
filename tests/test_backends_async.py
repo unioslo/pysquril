@@ -1029,6 +1029,212 @@ class AsyncTestSqlBackend:
             result.append(row)
         assert len(result) == 3
 
+    @pytest.mark.asyncio
+    async def test_session_read_after_write(self):
+        """Reads on a caller-supplied session see uncommitted writes."""
+        table = "async_session_read_write"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+            await self.backend.table_create(audit_table(table), session)
+            await self.backend.table_insert(
+                table_name=table, data={"id": 1, "x": "a"}, session=session
+            )
+            rows = []
+            async for row in self.backend.table_select(table, "", session=session):
+                rows.append(row)
+            assert rows == [{"id": 1, "x": "a"}]
+
+            await self.backend.table_update(
+                table_name=table,
+                uri_query="set=x&where=id=eq.1",
+                data={"x": "b"},
+                session=session,
+            )
+            rows = []
+            async for row in self.backend.table_select(table, "", session=session):
+                rows.append(row)
+            assert rows == [{"id": 1, "x": "b"}]
+
+            await self.backend.table_delete(
+                table_name=table, uri_query="where=id=eq.1", session=session
+            )
+            rows = []
+            async for row in self.backend.table_select(table, "", session=session):
+                rows.append(row)
+            assert rows == []
+
+        rows = []
+        async for row in self.backend.table_select(table, ""):
+            rows.append(row)
+        assert rows == []
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_session_rollback(self):
+        """Writes on a session that raises are rolled back."""
+        table = "async_session_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+
+        try:
+            async with self.backend._session_func()(self.backend.engine) as session:
+                await self.backend.table_insert(
+                    table_name=table, data={"id": 1}, session=session
+                )
+                rows = []
+                async for row in self.backend.table_select(table, "", session=session):
+                    rows.append(row)
+                assert rows == [{"id": 1}]
+                raise RuntimeError("force rollback")
+        except RuntimeError:
+            pass
+
+        rows = []
+        async for row in self.backend.table_select(table, ""):
+            rows.append(row)
+        assert rows == []
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_table_alter_with_session(self):
+        """Alter on a caller-supplied session commits the rename."""
+        table = "async_session_alter"
+        renamed = "async_session_alter_renamed"
+        for t in (table, renamed):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            out = await self.backend.table_alter(
+                table_name=table,
+                uri_query=f"alter=name=eq.{renamed}",
+                session=session,
+            )
+        assert out["tables"] == [table]
+        assert renamed in await self.backend.tables_list()
+
+        rows = []
+        async for row in self.backend.table_select(renamed, ""):
+            rows.append(row)
+        assert rows == []
+
+        await self.backend.table_delete(table_name=renamed, uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_table_restore_with_session(self):
+        """Restore on a caller-supplied session commits atomically."""
+        table = "async_session_restore"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        await self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+        await self.backend.table_update(
+            table_name=table,
+            uri_query="set=x&where=id=eq.1",
+            data={"x": "b"},
+        )
+        rows = []
+        async for row in self.backend.table_select(table, ""):
+            rows.append(row)
+        assert rows == [{"id": 1, "x": "b"}]
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            result = await self.backend.table_restore(
+                table_name=table,
+                uri_query="restore&primary_key=id",
+                session=session,
+            )
+            assert result["updates"]
+            rows = []
+            async for row in self.backend.table_select(table, "", session=session):
+                rows.append(row)
+            assert rows == [{"id": 1, "x": "a"}]
+
+        rows = []
+        async for row in self.backend.table_select(table, ""):
+            rows.append(row)
+        assert rows == [{"id": 1, "x": "a"}]
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_audit_probe_does_not_abort_session(self):
+        """Probing a deleted audit source must not poison a caller session."""
+        table = "async_audit_probe_session"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        await self.backend.table_insert(table_name=table, data={"id": 1})
+        # dropping the table removes the audit source but keeps the audit log
+        await self.backend.table_delete(table_name=table, uri_query="")
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            # selecting the audit table probes the now-missing source table
+            rows = []
+            async for row in self.backend.table_select(
+                audit_table(table), "", session=session
+            ):
+                rows.append(row)
+            # the session must still be usable
+            await session.execute("select 1")
+
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_select_audit_with_session(self):
+        """An audited read on a session creates the audit table if needed."""
+        table = "async_select_audit_session"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        await self.backend.table_insert(table_name=table, data={"id": 1})
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            rows = []
+            async for row in self.backend.table_select(
+                table, "select=id", audit=True, session=session
+            ):
+                rows.append(row)
+            assert rows == [[1]]
+
+        audit = []
+        async for row in self.backend.table_select(audit_table(table), ""):
+            audit.append(row)
+        assert len(audit) == 1
+        assert audit[0]["event"] == "read"
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
 
 class TestAsyncSqliteBackend(AsyncTestSqlBackend):
     """Async SQLite backend test suite - mirrors TestSqliteBackend"""
