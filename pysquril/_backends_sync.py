@@ -19,6 +19,7 @@ import logging
 import sqlite3
 import uuid
 
+from contextlib import ExitStack
 from datetime import timedelta
 from typing import Union, Iterable, Optional, Any, Callable
 from urllib.parse import unquote
@@ -57,6 +58,9 @@ class GenericBackend(BackendCore):
         Check if the table from which audit records originate
         still exists.
 
+        Deliberately runs on its own session: the probe may query a table
+        that no longer exists, and on PostgreSQL a caught error would
+        otherwise abort the caller's transaction.
         """
         exists = False
         try:
@@ -66,7 +70,12 @@ class GenericBackend(BackendCore):
             pass
         return exists
 
-    def table_restore(self, table_name: str, uri_query: str) -> dict:
+    def table_restore(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         """
         Restore rows to previous states, as recorded in the audit log.
 
@@ -101,6 +110,9 @@ class GenericBackend(BackendCore):
         this function: that is, restore events are not restored,
         only updates and deletes.
 
+        If a session is passed, the entire restore runs on that session
+        and commits or rolls back as a single unit.
+
         """
         work_done = {"restores": [], "updates": []}
 
@@ -109,103 +121,127 @@ class GenericBackend(BackendCore):
             return work_done
 
         # ensure we have enough information
-        sql = self.generator_class(
-            "", uri_query
-        )
+        sql = self.generator_class("", uri_query)
         message = sql.message
         primary_key = sql.parsed_uri_query.primary_key
 
-        # fetch a copy of the current state, and all primay keys
-        table_exists = False
-        try:
-            current_data = list(self.table_select(table_name, ""))
-            current_pks = list(self.table_select(table_name, f"select={primary_key}"))
-            table_exists = True
-        except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
-            current_data = []
-            current_pks = []
         # fetch the desired state
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc"  # sorted from old to new
-        target_data = list(self.table_select(audit_table(table_name), uri_query))
+        target_data = list(
+            self.table_select(audit_table(table_name), uri_query, session=session)
+        )
         if not target_data:
             return work_done  # nothing to do
-        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
-        session_func = self._session_func()
-        try:
-            # ensure the table exists, may have been deleted
-            with session_func(self.engine) as session:
-                self.table_create(table_name, session)
-        except psycopg2.errors.DuplicateObject as e:
-            pass  # already exists
-        handled = []
-        with session_func(self.engine) as session:
-            for entry in target_data:
-                target_entry = entry.get("previous")
-                pk_value = (
-                    self._get_pk_value(primary_key, target_entry)
-                    if target_entry
-                    else None
+
+        if session is not None:
+            self._restore_entries(
+                table_name,
+                uri_query,
+                primary_key,
+                target_data,
+                message,
+                session,
+                work_done,
+            )
+        else:
+            with self._session_func()(self.engine) as session:
+                self._restore_entries(
+                    table_name,
+                    uri_query,
+                    primary_key,
+                    target_data,
+                    message,
+                    session,
+                    work_done,
                 )
-                if pk_value in handled or entry.get("event") in [
-                    "restore",
-                    "create",
-                    "read",
-                ]:
-                    continue
-                target_entry = entry.get("previous")
-                result = list(
-                    self.table_select(
-                        table_name,
-                        f"where={primary_key}=eq.{pk_value}",
-                    )
-                )
-                if len(result) > 1:
-                    raise DataIntegrityError(
-                        f"primary_key: {primary_key} is not unique"
-                    )
-                elif not result:
-                    # then it is currently deleted
-                    self.table_insert(table_name, target_entry, session)
-                    self.table_insert(
-                        audit_table(table_name),
-                        tsc.event_restore(
-                            diff=target_entry, previous=None, query=uri_query
-                        ),
-                        session,
-                    )
-                    work_done["restores"].append(entry)
-                else:
-                    current_entry = result[0]
-                    to_change, to_remove, to_add = self._diff_entries(current_entry, target_entry)
-                    if to_change or to_add:
-                        # note: query construction depends on the constraint
-                        # that only top-level keys are allowed in set operations
-                        keys = set(to_change.keys()).union(to_add.keys())
-                        to_change.update(to_add)
-                        set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
-                        self.table_update(
-                            table_name,
-                            set_query,
-                            data=to_change,
-                            tsc=tsc,
-                            session=session,
-                        )
-                        work_done["updates"].append(entry)
-                    if to_remove:
-                        keys = list(map(lambda x: f"-{x}", to_remove.keys()))
-                        set_query = f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
-                        self.table_update(
-                            table_name,
-                            set_query,
-                            data=None,
-                            tsc=tsc,
-                            session=session,
-                        )
-                        work_done["updates"].append(entry)
-                handled.append(pk_value)
         return work_done
+
+    def _restore_entries(
+        self,
+        table_name: str,
+        uri_query: str,
+        primary_key: str,
+        target_data: list,
+        message: Optional[str],
+        session: Union[sqlite3.Cursor, psycopg2.extensions.cursor],
+        work_done: dict,
+    ) -> None:
+        """Apply restore entries onto a single, caller-owned session."""
+        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
+        # ensure the table exists, may have been deleted
+        session.execute("SAVEPOINT pysquril_restore_create")
+        try:
+            self.table_create(table_name, session)
+        except psycopg2.errors.DuplicateObject:
+            session.execute("ROLLBACK TO SAVEPOINT pysquril_restore_create")
+        handled = []
+        for entry in target_data:
+            target_entry = entry.get("previous")
+            pk_value = (
+                self._get_pk_value(primary_key, target_entry) if target_entry else None
+            )
+            if pk_value in handled or entry.get("event") in [
+                "restore",
+                "create",
+                "read",
+            ]:
+                continue
+            target_entry = entry.get("previous")
+            result = list(
+                self.table_select(
+                    table_name,
+                    f"where={primary_key}=eq.{pk_value}",
+                    session=session,
+                )
+            )
+            if len(result) > 1:
+                raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
+            elif not result:
+                # then it is currently deleted
+                self.table_insert(table_name, target_entry, session)
+                self.table_insert(
+                    audit_table(table_name),
+                    tsc.event_restore(
+                        diff=target_entry, previous=None, query=uri_query
+                    ),
+                    session,
+                )
+                work_done["restores"].append(entry)
+            else:
+                current_entry = result[0]
+                to_change, to_remove, to_add = self._diff_entries(
+                    current_entry, target_entry
+                )
+                if to_change or to_add:
+                    # note: query construction depends on the constraint
+                    # that only top-level keys are allowed in set operations
+                    keys = set(to_change.keys()).union(to_add.keys())
+                    to_change.update(to_add)
+                    set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
+                    self.table_update(
+                        table_name,
+                        set_query,
+                        data=to_change,
+                        tsc=tsc,
+                        session=session,
+                    )
+                    work_done["updates"].append(entry)
+                if to_remove:
+                    keys = list(map(lambda x: f"-{x}", to_remove.keys()))
+                    set_query = (
+                        f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
+                    )
+                    self.table_update(
+                        table_name,
+                        set_query,
+                        data=None,
+                        tsc=tsc,
+                        session=session,
+                    )
+                    work_done["updates"].append(entry)
+            handled.append(pk_value)
 
     def _tables_in_schemas(self, table_name: str) -> list:
         """
@@ -279,13 +315,20 @@ class GenericBackend(BackendCore):
 
     # _query_for_select and _query_for_select_many are now in BackendCore
 
-    def _yield_results(self, query: str) -> Iterable[tuple]:
+    def _yield_results(
+        self,
+        query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> Iterable[tuple]:
         raise NotImplementedError
 
     def _is_audit_table(self, table_name: str) -> bool:
         """
         Determine whether a given table is an audit table.
 
+        Deliberately runs on its own session: the probe may query a table
+        that no longer exists, and on PostgreSQL a caught error would
+        otherwise abort the caller's transaction.
         """
         sufficient = False
         neccesary = table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX)
@@ -317,6 +360,7 @@ class GenericBackend(BackendCore):
         data: Optional[Union[dict, list]] = None,
         exclude_endswith: list = [],
         audit: bool = False,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> Iterable[tuple]:
         """
         Yield a resulset associated with a table_name, and a uri_query.
@@ -327,6 +371,11 @@ class GenericBackend(BackendCore):
         all the relevant tables together.
 
         Optionally exclude tables that end with a specific pattern.
+
+        If a session is passed, the query is executed on that session
+        (allowing read-after-write within a single connection/transaction).
+        The results are yielded lazily, so the caller must fully consume the
+        returned iterable before closing the session.
 
         """
         apply_cutoff = (
@@ -356,8 +405,15 @@ class GenericBackend(BackendCore):
             tsc = AuditTransaction(
                 identity=self.requestor, identity_name=self.requestor_name
             )
-            self.table_insert(audit_table(table_name), tsc.event_read(query=uri_query))
-        return self._yield_results(query)
+            if session is not None:
+                # ensure the audit table exists within the caller's transaction
+                self.table_create(audit_table(table_name), session)
+            self.table_insert(
+                audit_table(table_name),
+                tsc.event_read(query=uri_query),
+                session=session,
+            )
+        return self._yield_results(query, session=session)
 
     def table_delete(
         self,
@@ -380,7 +436,7 @@ class GenericBackend(BackendCore):
         is_audit_table = self._is_audit_table(table_name)
         if audit:
             tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            for row in self.table_select(table_name, uri_query):
+            for row in self.table_select(table_name, uri_query, session=session):
                 audit_data.append(
                     tsc.event_delete(diff=None, previous=row, query=uri_query)
                 )
@@ -427,7 +483,7 @@ class GenericBackend(BackendCore):
             if not tsc
             else tsc
         )
-        for val in self.table_select(table_name, uri_query, data=data):
+        for val in self.table_select(table_name, uri_query, data=data, session=session):
             audit_data.append(
                 tsc.event_update(diff=data, previous=val, query=uri_query)
             )
@@ -440,10 +496,20 @@ class GenericBackend(BackendCore):
             self.table_insert(audit_table(table_name), audit_data)
         return True
 
-    def table_alter(self, table_name: str, uri_query: str) -> dict:
+    def table_alter(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         """
         Alter the name of a table, and its audit table (if it exists).
         Return information about which tables were altered.
+
+        If a session is passed, both alters are executed on that session,
+        so they commit or roll back together. A savepoint isolates the
+        audit table alter, allowing a missing audit table to be tolerated
+        without aborting the surrounding transaction.
 
         """
         if self._is_audit_table(table_name):
@@ -453,25 +519,39 @@ class GenericBackend(BackendCore):
             uri_query,
             table_name_func=self._fqtn,
         )
-        with self._session_func()(self.engine) as session:
-            session.execute(sql.alter_query)
+        audit_table_name = audit_table(table_name)
+        audit_sql = self.generator_class(
+            f"{self._fqtn(audit_table_name)}",
+            uri_query,
+            table_name_func=self._fqtn,
+            audit=True,
+        )
         altered = {"tables": [table_name]}
-        try:
-            audit_table_name = audit_table(table_name)
-            sql = self.generator_class(
-                f"{self._fqtn(audit_table_name)}",
-                uri_query,
-                table_name_func=self._fqtn,
-                audit=True,
-            )
+        if session:
+            session.execute(sql.alter_query)
+            session.execute("SAVEPOINT pysquril_alter_audit")
+            try:
+                session.execute(audit_sql.alter_query)
+                altered["tables"].append(audit_table_name)
+            except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
+                session.execute("ROLLBACK TO SAVEPOINT pysquril_alter_audit")
+        else:
             with self._session_func()(self.engine) as session:
                 session.execute(sql.alter_query)
-            altered["tables"].append(audit_table_name)
-        except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
-            pass
+            try:
+                with self._session_func()(self.engine) as session:
+                    session.execute(audit_sql.alter_query)
+                altered["tables"].append(audit_table_name)
+            except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
+                pass
         return altered
 
-    def _audit_insert(self, table_name: str, data: Union[str, list]) -> bool:
+    def _audit_insert(
+        self,
+        table_name: str,
+        data: Union[str, list],
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
         tsc = AuditTransaction(
             identity=self.requestor, identity_name=self.requestor_name
         )
@@ -481,7 +561,7 @@ class GenericBackend(BackendCore):
                 audit_data.append(tsc.event_create(diff=row))
         else:
             audit_data = [tsc.event_create(diff=data)]
-        self.table_insert(audit_table(table_name), audit_data)
+        self.table_insert(audit_table(table_name), audit_data, session=session)
         return True
 
 
@@ -630,6 +710,7 @@ class SqliteBackend(GenericBackend):
         audit: bool = False,
     ) -> bool:
         try:
+            caller_session = session
             dtype = type(data)
             insert_stmt = f"insert into {self._fqtn(table_name)} (data) values (?)"
             target = []
@@ -654,7 +735,7 @@ class SqliteBackend(GenericBackend):
                     if update_all_view:
                         self._define_all_view(table_name)
             if audit:
-                self._audit_insert(table_name, data)
+                self._audit_insert(table_name, data, caller_session)
             return True
         except sqlite3.IntegrityError as e:
             logging.info("Ignoring duplicate row")
@@ -669,8 +750,14 @@ class SqliteBackend(GenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(self, query: str) -> Iterable[tuple]:
-        with sqlite_session(self.engine) as session:
+    def _yield_results(
+        self,
+        query: str,
+        session: Optional[sqlite3.Cursor] = None,
+    ) -> Iterable[tuple]:
+        with ExitStack() as stack:
+            if session is None:
+                session = stack.enter_context(self._session_func()(self.engine))
             for row in session.execute(query):
                 yield json.loads(row[0])
 
@@ -828,6 +915,7 @@ class PostgresBackend(GenericBackend):
         audit: bool = False,
     ) -> bool:
         try:
+            caller_session = session
             dtype = type(data)
             insert_stmt = f"insert into {self._fqtn(table_name)} (data) values (%s)"
             target = []
@@ -852,7 +940,7 @@ class PostgresBackend(GenericBackend):
                     if update_all_view:
                         self._define_all_view(table_name)
             if audit:
-                self._audit_insert(table_name, data)
+                self._audit_insert(table_name, data, caller_session)
             return True
         except psycopg2.IntegrityError as e:
             logging.info("Ignoring duplicate row")
@@ -867,8 +955,14 @@ class PostgresBackend(GenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(self, query: str) -> Iterable[tuple]:
-        with postgres_session(self.engine) as session:
+    def _yield_results(
+        self,
+        query: str,
+        session: Optional[psycopg2.extensions.cursor] = None,
+    ) -> Iterable[tuple]:
+        with ExitStack() as stack:
+            if session is None:
+                session = stack.enter_context(self._session_func()(self.engine))
             session.execute(query)
             for row in session:
                 yield row[0]
