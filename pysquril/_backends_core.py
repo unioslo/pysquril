@@ -153,6 +153,7 @@ class DatabaseBackend(ABC):
         table_name: str,
         data: Union[dict, list],
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+        update_all_view: bool = False,
         audit: bool = False,
     ) -> bool:
         pass
@@ -173,6 +174,7 @@ class DatabaseBackend(ABC):
         self,
         table_name: str,
         uri_query: str,
+        update_all_view: bool = False,
         audit: bool = True,
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> bool:
@@ -196,7 +198,7 @@ class DatabaseBackend(ABC):
         table_name: str,
         uri_query: str,
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
-    ) -> bool:
+    ) -> dict:
         pass
 
     @abstractmethod
