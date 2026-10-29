@@ -232,7 +232,7 @@ class GenericBackend(BackendCore):
                     work_done["updates"].append(entry)
             handled.append(pk_value)
 
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """
         Return a list of all existing instances of the {table_name}
         across all schemas, including the schema name: {schema}.{table_name}.
@@ -264,7 +264,7 @@ class GenericBackend(BackendCore):
         """
         raise NotImplementedError
 
-    def _define_all_view(self, table_name: str) -> None:
+    def _define_all_view(self, table_name: str, session=None) -> None:
         """
         To allow queries across all schemas, for a given table.
 
@@ -293,13 +293,12 @@ class GenericBackend(BackendCore):
         to query a given table across all schemas.
 
         """
-        tables = self._tables_in_schemas(table_name)
-        if not tables:
-            return  # when the last one is deleted
-        unions = " union all ".join([f"select * from {t}" for t in tables])
-        view_name = self._fqtn(table_name, schema_name="all")
-        session_func = self._session_func()
-        with session_func(self.engine) as session:
+        with self._session_scope(session) as session:
+            tables = self._tables_in_schemas(table_name, session=session)
+            if not tables:
+                return  # when the last one is deleted
+            unions = " union all ".join([f"select * from {t}" for t in tables])
+            view_name = self._fqtn(table_name, schema_name="all")
             self._create_all_view(view_name, unions, session)
 
     # _query_for_select and _query_for_select_many are now in BackendCore
@@ -458,8 +457,8 @@ class GenericBackend(BackendCore):
             if not is_audit_table and audit:
                 self.table_create(audit_table(table_name), session)
                 self.table_insert(audit_table(table_name), audit_data, session)
-        if update_all_view:
-            self._define_all_view(table_name)
+            if update_all_view:
+                self._define_all_view(table_name, session)
         return True
 
     def _do_update(
@@ -636,13 +635,13 @@ class SqliteBackend(GenericBackend):
         schema = schema_name or self.schema
         return f'"{schema}{self.sep}{table_name}"'
 
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """
         Return a list of all existing instances of the {table_name}
         across all schemas, including the schema name: {schema}.{table_name}.
 
         """
-        with sqlite_session(self.engine) as session:
+        with self._session_scope(session) as session:
             res = session.execute(
                 f"""select name FROM sqlite_master where type = 'table'
                     and name like '{self.schema_pattern}%{table_name}'
@@ -738,8 +737,8 @@ class SqliteBackend(GenericBackend):
                         session.executemany(insert_stmt, target)
                         if audit:
                             self._audit_insert(table_name, data, session)
-                    if update_all_view:
-                        self._define_all_view(table_name)
+                        if update_all_view:
+                            self._define_all_view(table_name, session)
             return True
         except sqlite3.IntegrityError as e:
             logging.info("Ignoring duplicate row")
@@ -817,13 +816,13 @@ class PostgresBackend(GenericBackend):
         schema = '"all"' if schema == "all" else schema  # all is a reserved word
         return f'{schema}{self.sep}"{table_name}"'
 
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """
         Return a list of all existing instances of the {table_name}
         across all schemas, including the schema name: {schema}.{table_name}.
 
         """
-        with postgres_session(self.engine) as session:
+        with self._session_scope(session) as session:
             session.execute(
                 f"""select concat_ws('.', table_schema, concat('"', table_name, '"'))
                     from information_schema.tables where table_schema
@@ -939,8 +938,8 @@ class PostgresBackend(GenericBackend):
                         session.executemany(insert_stmt, target)
                         if audit:
                             self._audit_insert(table_name, data, session)
-                    if update_all_view:
-                        self._define_all_view(table_name)
+                        if update_all_view:
+                            self._define_all_view(table_name, session)
             return True
         except psycopg2.IntegrityError as e:
             logging.info("Ignoring duplicate row")

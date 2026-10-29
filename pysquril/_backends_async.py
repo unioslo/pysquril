@@ -190,15 +190,14 @@ class AsyncGenericBackend(BackendCore):
                     work_done["updates"].append(entry)
             handled.append(pk_value)
 
-    async def _define_all_view(self, table_name: str) -> None:
+    async def _define_all_view(self, table_name: str, session=None) -> None:
         """Create or update view for cross-schema queries."""
-        tables = await self._tables_in_schemas(table_name)
-        if not tables:
-            return
-        unions = " union all ".join([f"select * from {t}" for t in tables])
-        view_name = self._fqtn(table_name, schema_name="all")
-        session_func = self._session_func()
-        async with session_func(self.engine) as session:
+        async with self._session_scope(session) as session:
+            tables = await self._tables_in_schemas(table_name, session=session)
+            if not tables:
+                return
+            unions = " union all ".join([f"select * from {t}" for t in tables])
+            view_name = self._fqtn(table_name, schema_name="all")
             await self._create_all_view(view_name, unions, session)
 
     async def _audit_insert(self, table_name: str, data, session=None) -> bool:
@@ -359,9 +358,8 @@ class AsyncGenericBackend(BackendCore):
             if not is_audit_table and audit:
                 await self.table_create(audit_table(table_name), session)
                 await self.table_insert(audit_table(table_name), audit_data, session)
-
-        if update_all_view:
-            await self._define_all_view(table_name)
+            if update_all_view:
+                await self._define_all_view(table_name, session)
         return True
 
     async def _do_update(self, session, query: str) -> None:
@@ -482,9 +480,9 @@ class AsyncSqliteBackend(AsyncGenericBackend):
         schema = schema_name or self.schema
         return f'"{schema}{self.sep}{table_name}"'
 
-    async def _tables_in_schemas(self, table_name: str) -> list:
+    async def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """Return list of table instances across all schemas."""
-        async with async_sqlite_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(
                 f"""select name FROM sqlite_master where type = 'table'
                     and name like '{self.schema_pattern}%{table_name}'
@@ -609,8 +607,8 @@ class AsyncSqliteBackend(AsyncGenericBackend):
                             )
                         if audit:
                             await self._audit_insert(table_name, data, session)
-                    if update_all_view:
-                        await self._define_all_view(table_name)
+                        if update_all_view:
+                            await self._define_all_view(table_name, session)
 
             return True
         except aiosqlite.IntegrityError:
@@ -680,9 +678,9 @@ class AsyncPostgresBackend(AsyncGenericBackend):
         schema = '"all"' if schema == "all" else schema  # all is a reserved word
         return f'{schema}{self.sep}"{table_name}"'
 
-    async def _tables_in_schemas(self, table_name: str) -> list:
+    async def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """Return list of table instances across all schemas."""
-        async with async_postgres_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(
                 f"""select concat_ws('.', table_schema, concat('"', table_name, '"'))
                     from information_schema.tables where table_schema
@@ -821,8 +819,8 @@ class AsyncPostgresBackend(AsyncGenericBackend):
                             )
                         if audit:
                             await self._audit_insert(table_name, data, session)
-                    if update_all_view:
-                        await self._define_all_view(table_name)
+                        if update_all_view:
+                            await self._define_all_view(table_name, session)
 
             return True
         except psycopg.errors.UniqueViolation:

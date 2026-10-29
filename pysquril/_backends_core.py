@@ -255,7 +255,7 @@ class BackendCore(DatabaseBackend):
         raise NotImplementedError
 
     @abstractmethod
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """Return list of table instances across schemas. Backend-specific."""
         raise NotImplementedError
 
