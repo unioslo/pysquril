@@ -64,7 +64,8 @@ class GenericBackend(BackendCore):
         """
         exists = False
         try:
-            current_data = list(self.table_select(audit_table_src(table_name), ""))
+            # consume the query; it raises if the source table is gone
+            _ = list(self.table_select(audit_table_src(table_name), ""))
             exists = True
         except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
             pass

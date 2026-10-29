@@ -58,11 +58,11 @@ class AsyncGenericBackend(BackendCore):
         """
         exists = False
         try:
-            current_data = []
-            async for row in self.table_select(audit_table_src(table_name), ""):
-                current_data.append(row)
-                break  # Just need to know if any data exists
-            exists = len(current_data) > 0
+            # an existing but empty source table still counts as existing,
+            # so only a raised error (missing table) means it is gone
+            async for _row in self.table_select(audit_table_src(table_name), ""):
+                break
+            exists = True
         except Exception:
             pass
         return exists
