@@ -1364,6 +1364,33 @@ class AsyncTestSqlBackend:
 
         await self.backend.table_delete(table_name=table, uri_query="")
 
+    @pytest.mark.asyncio
+    async def test_insert_audit_rollback(self):
+        """A failed audit insert rolls the insert back (one transaction)."""
+        table = "async_insert_audit_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        await self.backend.table_insert(table_name=table, data={"id": 0})
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("audit insert failed")
+
+        with mock.patch.object(self.backend, "_audit_insert", new=boom):
+            with pytest.raises(RuntimeError):
+                await self.backend.table_insert(
+                    table_name=table, data={"id": 1}, audit=True
+                )
+
+        rows = []
+        async for row in self.backend.table_select(table, ""):
+            rows.append(row)
+        assert rows == [{"id": 0}]
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+
 
 class TestAsyncSqliteBackend(AsyncTestSqlBackend):
     """Async SQLite backend test suite - mirrors TestSqliteBackend"""

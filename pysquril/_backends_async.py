@@ -201,6 +201,20 @@ class AsyncGenericBackend(BackendCore):
         async with session_func(self.engine) as session:
             await self._create_all_view(view_name, unions, session)
 
+    async def _audit_insert(self, table_name: str, data, session=None) -> bool:
+        """Record create events for inserted rows."""
+        tsc = AuditTransaction(
+            identity=self.requestor, identity_name=self.requestor_name
+        )
+        if isinstance(data, dict):
+            data = [data]
+        audit_data = [tsc.event_create(diff=entry) for entry in data]
+        if session is not None:
+            # ensure the audit table exists within the caller's transaction
+            await self.table_create(audit_table(table_name), session)
+        await self.table_insert(audit_table(table_name), audit_data, session=session)
+        return True
+
     @asynccontextmanager
     async def _session_scope(self, session=None):
         """
@@ -561,44 +575,42 @@ class AsyncSqliteBackend(AsyncGenericBackend):
         """Insert data into table."""
 
         try:
-            caller_session = session
             data = [data] if isinstance(data, dict) else data
             table_name_fqtn = self._fqtn(table_name)
 
-            if session:
+            if session is not None:
                 # Session provided - caller handles exceptions
                 for entry in data:
                     await session.execute(
                         f"insert into {table_name_fqtn} values (json(?))",
                         (json.dumps(entry),),
                     )
+                if audit:
+                    await self._audit_insert(table_name, data, session)
             else:
                 # No session - handle table creation retry logic
                 try:
-                    async with async_sqlite_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (json(?))",
                                 (json.dumps(entry),),
                             )
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
                 except (aiosqlite.ProgrammingError, aiosqlite.OperationalError):
                     # Table doesn't exist - create and retry
-                    async with async_sqlite_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         await self.table_create(table_name, session)
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (json(?))",
                                 (json.dumps(entry),),
                             )
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
                     if update_all_view:
                         await self._define_all_view(table_name)
-
-            if audit:
-                tsc = AuditTransaction(self.requestor, "", self.requestor_name)
-                audit_data = [tsc.event_create(diff=entry) for entry in data]
-                await self.table_insert(
-                    audit_table(table_name), audit_data, caller_session
-                )
 
             return True
         except aiosqlite.IntegrityError:
@@ -775,44 +787,42 @@ class AsyncPostgresBackend(AsyncGenericBackend):
     ) -> bool:
         """Insert data into table."""
         try:
-            caller_session = session
             data = [data] if isinstance(data, dict) else data
             table_name_fqtn = self._fqtn(table_name)
 
-            if session:
+            if session is not None:
                 # Session provided - caller handles exceptions
                 for entry in data:
                     await session.execute(
                         f"insert into {table_name_fqtn} values (%s::jsonb)",
                         (json.dumps(entry),),
                     )
+                if audit:
+                    await self._audit_insert(table_name, data, session)
             else:
                 # No session - handle table creation retry logic
                 try:
-                    async with async_postgres_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (%s::jsonb)",
                                 (json.dumps(entry),),
                             )
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
                 except (psycopg.errors.UndefinedTable, psycopg.errors.OperationalError):
                     # Table doesn't exist - create and retry
-                    async with async_postgres_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         await self.table_create(table_name, session)
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (%s::jsonb)",
                                 (json.dumps(entry),),
                             )
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
                     if update_all_view:
                         await self._define_all_view(table_name)
-
-            if audit:
-                tsc = AuditTransaction(self.requestor, "", self.requestor_name)
-                audit_data = [tsc.event_create(diff=entry) for entry in data]
-                await self.table_insert(
-                    audit_table(table_name), audit_data, caller_session
-                )
 
             return True
         except psycopg.errors.UniqueViolation:

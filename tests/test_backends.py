@@ -1519,6 +1519,28 @@ class TestSqlBackend(unittest.TestCase):
 
         self.backend.table_delete(table_name=table, uri_query="")
 
+    def test_insert_audit_rollback(self) -> None:
+        """A failed audit insert rolls the insert back (one transaction)."""
+        table = "insert_audit_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 0})
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("audit insert failed")
+
+        with mock.patch.object(self.backend, "_audit_insert", new=boom):
+            with pytest.raises(RuntimeError):
+                self.backend.table_insert(table_name=table, data={"id": 1}, audit=True)
+
+        # the row insert was rolled back together with the failed audit insert
+        self.assertEqual(list(self.backend.table_select(table, "")), [{"id": 0}])
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
 
 class TestSqliteBackend(TestSqlBackend):
     __test__ = True

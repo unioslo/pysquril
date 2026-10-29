@@ -557,6 +557,9 @@ class GenericBackend(BackendCore):
                 audit_data.append(tsc.event_create(diff=row))
         else:
             audit_data = [tsc.event_create(diff=data)]
+        if session is not None:
+            # ensure the audit table exists within the caller's transaction
+            self.table_create(audit_table(table_name), session)
         self.table_insert(audit_table(table_name), audit_data, session=session)
         return True
 
@@ -707,7 +710,6 @@ class SqliteBackend(GenericBackend):
         audit: bool = False,
     ) -> bool:
         try:
-            caller_session = session
             dtype = type(data)
             insert_stmt = f"insert into {self._fqtn(table_name)} (data) values (?)"
             target = []
@@ -716,23 +718,27 @@ class SqliteBackend(GenericBackend):
                     target.append((json.dumps(element),))
             elif dtype is dict:
                 target.append((json.dumps(data),))
-            if session:
+            if session is not None:
                 # in this case we are re-using a session
                 # from a context manager estabilshed by the caller
                 # and if an exception is raised, the caller handles it
                 session.executemany(insert_stmt, target)
+                if audit:
+                    self._audit_insert(table_name, data, session)
             else:
                 try:
-                    with sqlite_session(self.engine) as session:
+                    with self._session_scope() as session:
                         session.executemany(insert_stmt, target)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
                 except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
-                    with sqlite_session(self.engine) as session:
+                    with self._session_scope() as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
                     if update_all_view:
                         self._define_all_view(table_name)
-            if audit:
-                self._audit_insert(table_name, data, caller_session)
             return True
         except sqlite3.IntegrityError as e:
             logging.info("Ignoring duplicate row")
@@ -905,7 +911,6 @@ class PostgresBackend(GenericBackend):
         audit: bool = False,
     ) -> bool:
         try:
-            caller_session = session
             dtype = type(data)
             insert_stmt = f"insert into {self._fqtn(table_name)} (data) values (%s)"
             target = []
@@ -914,23 +919,27 @@ class PostgresBackend(GenericBackend):
                     target.append((json.dumps(element),))
             elif dtype is dict:
                 target.append((json.dumps(data),))
-            if session:
+            if session is not None:
                 # in this case we are re-using a session
                 # from a context manager estabilshed by the caller
                 # and if an exception is raised, the caller handles it
                 session.executemany(insert_stmt, target)
+                if audit:
+                    self._audit_insert(table_name, data, session)
             else:
                 try:
-                    with postgres_session(self.engine) as session:
+                    with self._session_scope() as session:
                         session.executemany(insert_stmt, target)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
                 except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
-                    with postgres_session(self.engine) as session:
+                    with self._session_scope() as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
                     if update_all_view:
                         self._define_all_view(table_name)
-            if audit:
-                self._audit_insert(table_name, data, caller_session)
             return True
         except psycopg2.IntegrityError as e:
             logging.info("Ignoring duplicate row")
