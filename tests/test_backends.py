@@ -7,6 +7,7 @@ import uuid
 import tempfile
 
 from datetime import timedelta
+from unittest import mock
 from typing import Callable, Union
 from urllib.parse import quote
 
@@ -1441,6 +1442,80 @@ class TestSqlBackend(unittest.TestCase):
             )
             self.assertEqual(len(rows), 1)
             self.assertIn(table, rows[0])
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
+    def test_update_audit_shares_session(self) -> None:
+        """The audit insert runs on the same session as the update."""
+        table = "update_audit_session"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+
+        seen = {}
+        orig_do_update = self.backend._do_update
+        orig_insert = self.backend.table_insert
+
+        def spy_do_update(session, query):
+            seen["update"] = session
+            return orig_do_update(session, query)
+
+        def spy_insert(table_name, data, session=None, *args, **kwargs):
+            if table_name == audit_table(table):
+                seen["audit"] = session
+            return orig_insert(table_name, data, session, *args, **kwargs)
+
+        with (
+            mock.patch.object(self.backend, "_do_update", new=spy_do_update),
+            mock.patch.object(self.backend, "table_insert", new=spy_insert),
+        ):
+            self.backend.table_update(
+                table_name=table,
+                uri_query="set=x&where=id=eq.1",
+                data={"x": "b"},
+            )
+
+        self.assertIsNotNone(seen.get("update"))
+        self.assertIs(seen.get("audit"), seen.get("update"))
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_update_audit_rollback(self) -> None:
+        """A failed audit insert rolls the update back (one transaction)."""
+        if not isinstance(self.backend, PostgresBackend):
+            pytest.skip("SQLite _do_update uses executescript (implicit commit)")
+
+        table = "update_audit_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+
+        orig_insert = self.backend.table_insert
+
+        def boom(table_name, data, session=None, *args, **kwargs):
+            if table_name == audit_table(table):
+                raise RuntimeError("audit insert failed")
+            return orig_insert(table_name, data, session, *args, **kwargs)
+
+        with mock.patch.object(self.backend, "table_insert", new=boom):
+            with pytest.raises(RuntimeError):
+                self.backend.table_update(
+                    table_name=table,
+                    uri_query="set=x&where=id=eq.1",
+                    data={"x": "b"},
+                )
+
+        # the update was rolled back together with the failed audit insert
+        self.assertEqual(
+            list(self.backend.table_select(table, "")), [{"id": 1, "x": "a"}]
+        )
 
         self.backend.table_delete(table_name=table, uri_query="")
 
