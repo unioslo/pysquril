@@ -1396,6 +1396,33 @@ class TestSqlBackend(unittest.TestCase):
         self.backend.table_delete(table_name=table, uri_query="")
         self.backend.table_delete(table_name=audit_table(table), uri_query="")
 
+    def test_update_audit_table_not_permitted(self) -> None:
+        table = "update_audit_guard"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+        # the update creates the audit table
+        self.backend.table_update(
+            table_name=table,
+            uri_query="set=x&where=id=eq.1",
+            data={"x": "b"},
+        )
+
+        # audit tables cannot be updated directly
+        with pytest.raises(OperationNotPermittedError):
+            self.backend.table_update(
+                table_name=audit_table(table),
+                uri_query="set=event&where=event=eq.update",
+                data={"event": "tampered"},
+            )
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
     def test_wildcard_select_with_session(self) -> None:
         """A wildcard select on a session sees tables created in that session."""
         prefix = "wildcard_session_"

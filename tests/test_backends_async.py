@@ -1236,6 +1236,34 @@ class AsyncTestSqlBackend:
         await self.backend.table_delete(table_name=audit_table(table), uri_query="")
 
     @pytest.mark.asyncio
+    async def test_update_audit_table_not_permitted(self):
+        """Audit tables cannot be updated directly."""
+        table = "async_update_audit_guard"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        await self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+        # the update creates the audit table
+        await self.backend.table_update(
+            table_name=table,
+            uri_query="set=x&where=id=eq.1",
+            data={"x": "b"},
+        )
+
+        with pytest.raises(OperationNotPermittedError):
+            await self.backend.table_update(
+                table_name=audit_table(table),
+                uri_query="set=event&where=event=eq.update",
+                data={"event": "tampered"},
+            )
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    @pytest.mark.asyncio
     async def test_wildcard_select_with_session(self):
         """A wildcard select on a session sees tables created in that session."""
         prefix = "async_wildcard_session_"
