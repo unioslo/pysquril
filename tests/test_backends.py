@@ -1396,6 +1396,27 @@ class TestSqlBackend(unittest.TestCase):
         self.backend.table_delete(table_name=table, uri_query="")
         self.backend.table_delete(table_name=audit_table(table), uri_query="")
 
+    def test_wildcard_select_with_session(self) -> None:
+        """A wildcard select on a session sees tables created in that session."""
+        prefix = "wildcard_session_"
+        table = f"{prefix}a"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+            self.backend.table_insert(table, {"id": 1}, session=session)
+            rows = list(
+                self.backend.table_select(f"{prefix}*", "select=id", session=session)
+            )
+            self.assertEqual(len(rows), 1)
+            self.assertIn(table, rows[0])
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
 
 class TestSqliteBackend(TestSqlBackend):
     __test__ = True

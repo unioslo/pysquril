@@ -1235,6 +1235,30 @@ class AsyncTestSqlBackend:
         await self.backend.table_delete(table_name=table, uri_query="")
         await self.backend.table_delete(table_name=audit_table(table), uri_query="")
 
+    @pytest.mark.asyncio
+    async def test_wildcard_select_with_session(self):
+        """A wildcard select on a session sees tables created in that session."""
+        prefix = "async_wildcard_session_"
+        table = f"{prefix}a"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+            await self.backend.table_insert(table, {"id": 1}, session=session)
+            rows = []
+            async for row in self.backend.table_select(
+                f"{prefix}*", "select=id", session=session
+            ):
+                rows.append(row)
+            assert len(rows) == 1
+            assert table in rows[0]
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+
 
 class TestAsyncSqliteBackend(AsyncTestSqlBackend):
     """Async SQLite backend test suite - mirrors TestSqliteBackend"""

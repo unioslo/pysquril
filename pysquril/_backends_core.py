@@ -136,7 +136,7 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
-    def tables_list(self) -> list:
+    def tables_list(self, session=None) -> list:
         pass
 
     @abstractmethod
@@ -226,6 +226,16 @@ class BackendCore(DatabaseBackend):
     @abstractmethod
     def _session_func(self) -> Callable:
         """Return the appropriate session context manager (sync or async)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _session_scope(self, session=None):
+        """
+        Yield the caller's session, or open (and commit/rollback) a fresh one.
+
+        Implemented by the sync and async backend bases, since the context
+        manager protocol differs between the two.
+        """
         raise NotImplementedError
 
     @abstractmethod

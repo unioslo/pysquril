@@ -19,7 +19,7 @@ import logging
 import sqlite3
 import uuid
 
-from contextlib import ExitStack
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Union, Iterable, Optional, Any, Callable
 from urllib.parse import unquote
@@ -135,7 +135,7 @@ class GenericBackend(BackendCore):
         if not target_data:
             return work_done  # nothing to do
 
-        if session is not None:
+        with self._session_scope(session) as session:
             self._restore_entries(
                 table_name,
                 uri_query,
@@ -145,17 +145,6 @@ class GenericBackend(BackendCore):
                 session,
                 work_done,
             )
-        else:
-            with self._session_func()(self.engine) as session:
-                self._restore_entries(
-                    table_name,
-                    uri_query,
-                    primary_key,
-                    target_data,
-                    message,
-                    session,
-                    work_done,
-                )
         return work_done
 
     def _restore_entries(
@@ -315,14 +304,28 @@ class GenericBackend(BackendCore):
 
     # _query_for_select and _query_for_select_many are now in BackendCore
 
+    @contextmanager
+    def _session_scope(
+        self,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> Iterable[Union[sqlite3.Cursor, psycopg2.extensions.cursor]]:
+        """
+        Yield the caller's session, or open (and commit/rollback) a fresh one.
+
+        Lets methods share a single body whether or not a session was passed.
+        """
+        if session is not None:
+            yield session
+        else:
+            with self._session_func()(self.engine) as session:
+                yield session
+
     def _yield_results(
         self,
         query: str,
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> Iterable[tuple]:
-        with ExitStack() as stack:
-            if session is None:
-                session = stack.enter_context(self._session_func()(self.engine))
+        with self._session_scope(session) as session:
             session.execute(query)
             for row in session:
                 yield self._decode_row(row)
@@ -393,7 +396,9 @@ class GenericBackend(BackendCore):
         )
         if "*" in table_name:
             tables = self.tables_list(
-                exclude_endswith=exclude_endswith, table_like=table_name
+                exclude_endswith=exclude_endswith,
+                table_like=table_name,
+                session=session,
             )
             if not tables:
                 return iter([])
@@ -448,17 +453,11 @@ class GenericBackend(BackendCore):
                 audit_data.append(
                     tsc.event_delete(diff=None, previous=row, query=uri_query)
                 )
-        if session:
+        with self._session_scope(session) as session:
             session.execute(sql.delete_query)
             if not is_audit_table and audit:
                 self.table_create(audit_table(table_name), session)
                 self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            with self._session_func()(self.engine) as session:
-                session.execute(sql.delete_query)
-                if not is_audit_table and audit:
-                    self.table_create(audit_table(table_name), session)
-                    self.table_insert(audit_table(table_name), audit_data, session)
         if update_all_view:
             self._define_all_view(table_name)
         return True
@@ -495,13 +494,10 @@ class GenericBackend(BackendCore):
             audit_data.append(
                 tsc.event_update(diff=data, previous=val, query=uri_query)
             )
-        if session:
+        with self._session_scope(session) as session:
             self._do_update(session, sql.update_query)
+            self.table_create(audit_table(table_name), session)
             self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            with self._session_func()(self.engine) as session:
-                self._do_update(session, sql.update_query)
-            self.table_insert(audit_table(table_name), audit_data)
         return True
 
     def table_alter(
@@ -535,7 +531,7 @@ class GenericBackend(BackendCore):
             audit=True,
         )
         altered = {"tables": [table_name]}
-        if session:
+        with self._session_scope(session) as session:
             session.execute(sql.alter_query)
             session.execute("SAVEPOINT pysquril_alter_audit")
             try:
@@ -543,15 +539,6 @@ class GenericBackend(BackendCore):
                 altered["tables"].append(audit_table_name)
             except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
                 session.execute("ROLLBACK TO SAVEPOINT pysquril_alter_audit")
-        else:
-            with self._session_func()(self.engine) as session:
-                session.execute(sql.alter_query)
-            try:
-                with self._session_func()(self.engine) as session:
-                    session.execute(audit_sql.alter_query)
-                altered["tables"].append(audit_table_name)
-            except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
-                pass
         return altered
 
     def _audit_insert(
@@ -673,13 +660,14 @@ class SqliteBackend(GenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session: Optional[sqlite3.Cursor] = None,
     ) -> list:
         table_like_filter = ""
         if table_like:
             pattern = table_like.replace("*", "%")
             table_like_filter = f"and name like '{pattern}'"
         query = f"select name FROM sqlite_master where type = 'table' {table_like_filter} order by name asc"
-        with sqlite_session(self.engine) as session:
+        with self._session_scope(session) as session:
             res = session.execute(query).fetchall()
         if not res:
             return []
@@ -858,6 +846,7 @@ class PostgresBackend(GenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session: Optional[psycopg2.extensions.cursor] = None,
     ) -> list:
         table_like_filter = ""
         if table_like:
@@ -865,7 +854,7 @@ class PostgresBackend(GenericBackend):
             table_like_filter = f"and table_name like '{pattern}'"
         query = f"""select table_name from information_schema.tables
             where table_schema = '{self.schema}' {table_like_filter} order by table_name asc"""
-        with postgres_session(self.engine) as session:
+        with self._session_scope(session) as session:
             session.execute(query)
             res = session.fetchall()
         if not res:

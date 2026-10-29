@@ -20,7 +20,7 @@ import logging
 import uuid
 
 from collections.abc import AsyncIterable
-from contextlib import AsyncExitStack
+from contextlib import asynccontextmanager
 from typing import Any, Optional, Callable, Union
 
 from pysquril._backends_core import BackendCore, AuditTransaction
@@ -100,7 +100,7 @@ class AsyncGenericBackend(BackendCore):
         if not target_data:
             return work_done
 
-        if session is not None:
+        async with self._session_scope(session) as session:
             await self._restore_entries(
                 table_name,
                 uri_query,
@@ -110,17 +110,6 @@ class AsyncGenericBackend(BackendCore):
                 session,
                 work_done,
             )
-        else:
-            async with self._session_func()(self.engine) as session:
-                await self._restore_entries(
-                    table_name,
-                    uri_query,
-                    primary_key,
-                    target_data,
-                    message,
-                    session,
-                    work_done,
-                )
 
         return work_done
 
@@ -217,13 +206,22 @@ class AsyncGenericBackend(BackendCore):
         async with session_func(self.engine) as session:
             await self._create_all_view(view_name, unions, session)
 
+    @asynccontextmanager
+    async def _session_scope(self, session=None):
+        """
+        Yield the caller's session, or open (and commit/rollback) a fresh one.
+
+        Lets methods share a single body whether or not a session was passed.
+        """
+        if session is not None:
+            yield session
+        else:
+            async with self._session_func()(self.engine) as session:
+                yield session
+
     async def _yield_results(self, query: str, session=None) -> AsyncIterable[tuple]:
         """Execute query and yield results asynchronously."""
-        async with AsyncExitStack() as stack:
-            if session is None:
-                session = await stack.enter_async_context(
-                    self._session_func()(self.engine)
-                )
+        async with self._session_scope(session) as session:
             await session.execute(query)
             async for row in session:
                 if row and row[0]:
@@ -288,7 +286,9 @@ class AsyncGenericBackend(BackendCore):
         )
         if "*" in table_name:
             tables = await self.tables_list(
-                exclude_endswith=exclude_endswith, table_like=table_name
+                exclude_endswith=exclude_endswith,
+                table_like=table_name,
+                session=session,
             )
             if not tables:
                 return
@@ -340,19 +340,11 @@ class AsyncGenericBackend(BackendCore):
                     tsc.event_delete(diff=None, previous=row, query=uri_query)
                 )
 
-        if session:
+        async with self._session_scope(session) as session:
             await session.execute(sql.delete_query)
             if not is_audit_table and audit:
                 await self.table_create(audit_table(table_name), session)
                 await self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            async with self._session_func()(self.engine) as session:
-                await session.execute(sql.delete_query)
-                if not is_audit_table and audit:
-                    await self.table_create(audit_table(table_name), session)
-                    await self.table_insert(
-                        audit_table(table_name), audit_data, session
-                    )
 
         if update_all_view:
             await self._define_all_view(table_name)
@@ -387,13 +379,10 @@ class AsyncGenericBackend(BackendCore):
                 tsc.event_update(diff=data, previous=val, query=uri_query)
             )
 
-        if session:
+        async with self._session_scope(session) as session:
             await self._do_update(session, sql.update_query)
+            await self.table_create(audit_table(table_name), session)
             await self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            async with self._session_func()(self.engine) as session:
-                await self._do_update(session, sql.update_query)
-            await self.table_insert(audit_table(table_name), audit_data)
 
         return True
 
@@ -427,7 +416,7 @@ class AsyncGenericBackend(BackendCore):
         # Return structure matches sync version
         altered = {"tables": [table_name]}
 
-        if session is not None:
+        async with self._session_scope(session) as session:
             await session.execute(sql.alter_query)
             await session.execute("SAVEPOINT pysquril_alter_audit")
             try:
@@ -435,17 +424,6 @@ class AsyncGenericBackend(BackendCore):
                 altered["tables"].append(audit_table_name)
             except (psycopg.errors.UndefinedTable, aiosqlite.OperationalError):
                 await session.execute("ROLLBACK TO SAVEPOINT pysquril_alter_audit")
-        else:
-            async with self._session_func()(self.engine) as session:
-                await session.execute(sql.alter_query)
-
-            # Try to alter audit table too
-            try:
-                async with self._session_func()(self.engine) as session:
-                    await session.execute(audit_sql.alter_query)
-                altered["tables"].append(audit_table_name)
-            except (psycopg.errors.UndefinedTable, aiosqlite.OperationalError):
-                pass  # Audit table doesn't exist, that's okay
 
         return altered
 
@@ -524,6 +502,7 @@ class AsyncSqliteBackend(AsyncGenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session=None,
     ) -> list:
         """List all tables in the database."""
         table_like_filter = ""
@@ -533,7 +512,7 @@ class AsyncSqliteBackend(AsyncGenericBackend):
 
         query = f"select name FROM sqlite_master where type = 'table' {table_like_filter} order by name asc"
 
-        async with async_sqlite_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(query)
             res = await session.fetchall()
 
@@ -730,6 +709,7 @@ class AsyncPostgresBackend(AsyncGenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session=None,
     ) -> list:
         """List all tables in the schema."""
         table_like_filter = ""
@@ -739,7 +719,7 @@ class AsyncPostgresBackend(AsyncGenericBackend):
         query = f"""select table_name from information_schema.tables
             where table_schema = '{self.schema}' {table_like_filter} order by table_name asc"""
 
-        async with async_postgres_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(query)
             res = await session.fetchall()
 
