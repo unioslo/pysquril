@@ -87,18 +87,17 @@ class AsyncGenericBackend(BackendCore):
         message = sql.message
         primary_key = sql.parsed_uri_query.primary_key
 
-        # Fetch desired state
+        # Fetch the desired state and apply it in one session/transaction
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc"
-        target_data = await self._select_all(
-            audit_table(table_name), uri_query, session=session
-        )
-
-        if not target_data:
-            return work_done
 
         async with self._session_scope(session) as session:
+            target_data = await self._select_all(
+                audit_table(table_name), uri_query, session=session
+            )
+            if not target_data:
+                return work_done
             await self._restore_entries(
                 table_name,
                 uri_query,
@@ -330,17 +329,18 @@ class AsyncGenericBackend(BackendCore):
         session=None,
     ) -> bool:
         """Delete data from table or drop table."""
-        audit_data = []
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
         is_audit_table = await self._is_audit_table(table_name)
-        if audit:
-            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            async for row in self.table_select(table_name, uri_query, session=session):
-                audit_data.append(
-                    tsc.event_delete(diff=None, previous=row, query=uri_query)
-                )
-
         async with self._session_scope(session) as session:
+            audit_data = []
+            if audit:
+                tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+                async for row in self.table_select(
+                    table_name, uri_query, session=session
+                ):
+                    audit_data.append(
+                        tsc.event_delete(diff=None, previous=row, query=uri_query)
+                    )
             await session.execute(sql.delete_query)
             if not is_audit_table and audit:
                 await self.table_create(audit_table(table_name), session)
@@ -366,20 +366,17 @@ class AsyncGenericBackend(BackendCore):
         if await self._is_audit_table(table_name):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
-
-        if tsc is None:
-            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-
-        # Build audit trail
-        audit_data = []
-        async for val in self.table_select(
-            table_name, uri_query, data=data, session=session
-        ):
-            audit_data.append(
-                tsc.event_update(diff=data, previous=val, query=uri_query)
-            )
-
         async with self._session_scope(session) as session:
+            if tsc is None:
+                tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+            # Build audit trail on the same session as the write
+            audit_data = []
+            async for val in self.table_select(
+                table_name, uri_query, data=data, session=session
+            ):
+                audit_data.append(
+                    tsc.event_update(diff=data, previous=val, query=uri_query)
+                )
             await self._do_update(session, sql.update_query)
             await self.table_create(audit_table(table_name), session)
             await self.table_insert(audit_table(table_name), audit_data, session)

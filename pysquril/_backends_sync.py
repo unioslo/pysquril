@@ -125,17 +125,16 @@ class GenericBackend(BackendCore):
         message = sql.message
         primary_key = sql.parsed_uri_query.primary_key
 
-        # fetch the desired state
+        # fetch the desired state and apply it in one session/transaction
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc"  # sorted from old to new
-        target_data = list(
-            self.table_select(audit_table(table_name), uri_query, session=session)
-        )
-        if not target_data:
-            return work_done  # nothing to do
-
         with self._session_scope(session) as session:
+            target_data = list(
+                self.table_select(audit_table(table_name), uri_query, session=session)
+            )
+            if not target_data:
+                return work_done  # nothing to do
             self._restore_entries(
                 table_name,
                 uri_query,
@@ -444,16 +443,16 @@ class GenericBackend(BackendCore):
         data is being deleted completely for compliance purposes.
 
         """
-        audit_data = []
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
         is_audit_table = self._is_audit_table(table_name)
-        if audit:
-            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            for row in self.table_select(table_name, uri_query, session=session):
-                audit_data.append(
-                    tsc.event_delete(diff=None, previous=row, query=uri_query)
-                )
         with self._session_scope(session) as session:
+            audit_data = []
+            if audit:
+                tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+                for row in self.table_select(table_name, uri_query, session=session):
+                    audit_data.append(
+                        tsc.event_delete(diff=None, previous=row, query=uri_query)
+                    )
             session.execute(sql.delete_query)
             if not is_audit_table and audit:
                 self.table_create(audit_table(table_name), session)
@@ -483,18 +482,20 @@ class GenericBackend(BackendCore):
         """
         if self._is_audit_table(table_name):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
-        audit_data = []
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
-        tsc = (
-            AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            if not tsc
-            else tsc
-        )
-        for val in self.table_select(table_name, uri_query, data=data, session=session):
-            audit_data.append(
-                tsc.event_update(diff=data, previous=val, query=uri_query)
-            )
         with self._session_scope(session) as session:
+            tsc = (
+                AuditTransaction(self.requestor, sql.message, self.requestor_name)
+                if not tsc
+                else tsc
+            )
+            audit_data = []
+            for val in self.table_select(
+                table_name, uri_query, data=data, session=session
+            ):
+                audit_data.append(
+                    tsc.event_update(diff=data, previous=val, query=uri_query)
+                )
             self._do_update(session, sql.update_query)
             self.table_create(audit_table(table_name), session)
             self.table_insert(audit_table(table_name), audit_data, session)
