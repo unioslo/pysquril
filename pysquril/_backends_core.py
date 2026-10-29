@@ -260,6 +260,15 @@ class BackendCore(DatabaseBackend):
         raise NotImplementedError
 
     @abstractmethod
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists.
+
+        Implemented with a non-raising catalog lookup, so it is safe to run on
+        a caller-supplied session. Backend-specific.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def _create_all_view(
         self,
         view_name: str,

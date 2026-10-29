@@ -53,23 +53,16 @@ class GenericBackend(BackendCore):
 
     # _diff_entries and _get_pk_value are now in BackendCore
 
-    def _audit_source_exists(self, table_name: str) -> bool:
+    def _audit_source_exists(self, table_name: str, session=None) -> bool:
         """
         Check if the table from which audit records originate
         still exists.
 
-        Deliberately runs on its own session: the probe may query a table
-        that no longer exists, and on PostgreSQL a caught error would
-        otherwise abort the caller's transaction.
+        Uses a non-raising catalog lookup on the given session, so it is
+        session-consistent (it sees the session's own uncommitted DDL) and
+        cannot poison the surrounding transaction.
         """
-        exists = False
-        try:
-            # consume the query; it raises if the source table is gone
-            _ = list(self.table_select(audit_table_src(table_name), ""))
-            exists = True
-        except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
-            pass
-        return exists
+        return self._table_exists(audit_table_src(table_name), session)
 
     def table_restore(
         self,
@@ -240,6 +233,15 @@ class GenericBackend(BackendCore):
         """
         raise NotImplementedError
 
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """
+        Return whether a table exists.
+
+        Implemented with a non-raising catalog lookup, so it is safe to run on
+        a caller-supplied session. Backend-specific.
+        """
+        raise NotImplementedError
+
     def _create_all_view(
         self,
         view_name: str,
@@ -332,36 +334,47 @@ class GenericBackend(BackendCore):
     def _decode_row(self, row: Any) -> Any:
         raise NotImplementedError
 
-    def _is_audit_table(self, table_name: str) -> bool:
+    def _is_audit_table(self, table_name: str, session=None) -> bool:
         """
         Determine whether a given table is an audit table.
 
-        Deliberately runs on its own session: the probe may query a table
-        that no longer exists, and on PostgreSQL a caught error would
-        otherwise abort the caller's transaction.
+        Existence is checked with a non-raising catalog lookup on the given
+        session, so the probe is session-consistent and cannot poison the
+        surrounding transaction. The sample row is then read on the same
+        session; a table that exists but is not audit-shaped yields False.
         """
-        sufficient = False
-        neccesary = table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX)
-        if not neccesary:
-            return neccesary and sufficient
-        try:
-            dummy_event = AuditTransaction("").event_read(query="")
-            result = list(
-                self._yield_results(
-                    f"select data from {self._fqtn(table_name)} limit 1"
+        if not table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX):
+            return False
+        with self._session_scope(session) as session:
+            if not self._table_exists(table_name, session):
+                return False
+            try:
+                dummy_event = AuditTransaction("").event_read(query="")
+                result = list(
+                    self._yield_results(
+                        f"select data from {self._fqtn(table_name)} limit 1",
+                        session=session,
+                    )
+                )[0]
+                return bool(
+                    uuid.UUID(result.get("transaction_id"))
+                    and uuid.UUID(result.get("event_id"))
+                    and result.get("event") in ["update", "delete", "read", "create"]
+                    and result.get("timestamp") is not None
+                    and set(result.keys()).difference(dummy_event.keys()) == set()
                 )
-            )[0]
-            sufficient = (
-                uuid.UUID(result.get("transaction_id"))
-                and uuid.UUID(result.get("event_id"))
-                and result.get("event") in ["update", "delete", "read", "create"]
-                and result.get("timestamp") is not None
-                and set(result.keys()).difference(dummy_event.keys()) == set()
-            )
-
-        except Exception as e:
-            pass
-        return neccesary and sufficient
+            except (
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+                IndexError,
+                sqlite3.OperationalError,
+                psycopg2.errors.UndefinedColumn,
+                psycopg2.errors.UndefinedTable,
+            ):
+                logging.debug("Table %s is not audit-shaped", table_name)
+                return False
 
     def table_select(
         self,
@@ -389,8 +402,8 @@ class GenericBackend(BackendCore):
 
         """
         apply_cutoff = (
-            self._is_audit_table(table_name)
-            and not self._audit_source_exists(table_name)
+            self._is_audit_table(table_name, session=session)
+            and not self._audit_source_exists(table_name, session=session)
             and self.backup_days is not None
         )
         if "*" in table_name:
@@ -444,8 +457,8 @@ class GenericBackend(BackendCore):
 
         """
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
-        is_audit_table = self._is_audit_table(table_name)
         with self._session_scope(session) as session:
+            is_audit_table = self._is_audit_table(table_name, session=session)
             audit_data = []
             if audit:
                 tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
@@ -480,7 +493,7 @@ class GenericBackend(BackendCore):
         Update one or more keys, recording changes in the audit log.
 
         """
-        if self._is_audit_table(table_name):
+        if self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
         with self._session_scope(session) as session:
@@ -517,7 +530,7 @@ class GenericBackend(BackendCore):
         without aborting the surrounding transaction.
 
         """
-        if self._is_audit_table(table_name):
+        if self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(
             f"{self._fqtn(table_name)}",
@@ -648,6 +661,16 @@ class SqliteBackend(GenericBackend):
                 """
             ).fetchall()
         return [r[0] for r in res] if res else []
+
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via sqlite_master (never raises)."""
+        name = f"{self.schema}{self.sep}{table_name}"
+        with self._session_scope(session) as session:
+            res = session.execute(
+                "select 1 from sqlite_master where type = 'table' and name = ?",
+                (name,),
+            ).fetchone()
+        return res is not None
 
     def _create_all_view(
         self, view_name: str, unions: str, session: sqlite3.Cursor
@@ -831,6 +854,16 @@ class PostgresBackend(GenericBackend):
             )
             res = session.fetchall()
         return [r[0] for r in res] if res else []
+
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via pg_tables (never raises)."""
+        with self._session_scope(session) as session:
+            session.execute(
+                "select exists(select 1 from pg_tables "
+                "where schemaname = %s and tablename = %s)",
+                (self.schema, table_name),
+            )
+            return session.fetchone()[0]
 
     def _create_all_view(
         self, view_name: str, unions: str, session: psycopg2.extensions.cursor

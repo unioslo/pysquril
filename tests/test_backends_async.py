@@ -1209,6 +1209,94 @@ class AsyncTestSqlBackend:
         await self.backend.table_delete(table_name=audit_table(table), uri_query="")
 
     @pytest.mark.asyncio
+    async def test_audit_probe_does_not_commit_session(self):
+        """Probing an audit table must not commit the caller's transaction."""
+        table = "async_audit_probe_no_commit"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        # persist the tables so they survive the rollback below
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+            await self.backend.table_create(audit_table(table), session)
+
+        try:
+            async with self.backend._session_func()(self.backend.engine) as session:
+                await self.backend.table_insert(table, {"id": 1}, session=session)
+                # selecting the audit table runs the audit probes
+                rows = []
+                async for row in self.backend.table_select(
+                    audit_table(table), "", session=session
+                ):
+                    rows.append(row)
+                raise RuntimeError("force rollback")
+        except RuntimeError:
+            pass
+
+        # the uncommitted insert must not have been committed by the probe
+        rows = []
+        async for row in self.backend.table_select(table, ""):
+            rows.append(row)
+        assert rows == []
+        await self.backend.table_delete(table_name=table, uri_query="")
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_audit_probe_sees_uncommitted_audit_table(self):
+        """The audit-table guard reflects tables created in the same session."""
+        table = "async_audit_probe_uncommitted"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+            await self.backend.table_insert(table, {"id": 1, "x": "a"}, session=session)
+            # creates and populates the audit table, still uncommitted
+            await self.backend.table_update(
+                table_name=table,
+                uri_query="set=x&where=id=eq.1",
+                data={"x": "b"},
+                session=session,
+            )
+            with pytest.raises(OperationNotPermittedError):
+                await self.backend.table_update(
+                    table_name=audit_table(table),
+                    uri_query="set=event&where=event=eq.update",
+                    data={"event": "tampered"},
+                    session=session,
+                )
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+        await self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    @pytest.mark.asyncio
+    async def test_audit_source_probe_uses_session(self):
+        """The audit-source probe sees uncommitted tables on the session."""
+        table = "async_audit_source_probe"
+        for t in (table, audit_table(table)):
+            try:
+                await self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        # an unknown source table does not exist
+        assert not await self.backend._audit_source_exists(audit_table(table))
+
+        async with self.backend._session_func()(self.backend.engine) as session:
+            await self.backend.table_create(table, session)
+            assert await self.backend._audit_source_exists(
+                audit_table(table), session=session
+            )
+
+        await self.backend.table_delete(table_name=table, uri_query="")
+
+    @pytest.mark.asyncio
     async def test_select_audit_with_session(self):
         """An audited read on a session creates the audit table if needed."""
         table = "async_select_audit_session"

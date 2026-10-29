@@ -48,24 +48,15 @@ class AsyncGenericBackend(BackendCore):
     # _diff_entries, _get_pk_value, _query_for_select, _query_for_select_many
     # are inherited from BackendCore
 
-    async def _audit_source_exists(self, table_name: str) -> bool:
+    async def _audit_source_exists(self, table_name: str, session=None) -> bool:
         """
         Check if the table from which audit records originate still exists.
 
-        Deliberately runs on its own session: the probe may query a table
-        that no longer exists, and on PostgreSQL a caught error would
-        otherwise abort the caller's transaction.
+        Uses a non-raising catalog lookup on the given session, so it is
+        session-consistent (it sees the session's own uncommitted DDL) and
+        cannot poison the surrounding transaction.
         """
-        exists = False
-        try:
-            # an existing but empty source table still counts as existing,
-            # so only a raised error (missing table) means it is gone
-            async for _row in self.table_select(audit_table_src(table_name), ""):
-                break
-            exists = True
-        except Exception:
-            pass
-        return exists
+        return await self._table_exists(audit_table_src(table_name), session)
 
     async def table_restore(
         self, table_name: str, uri_query: str, session=None
@@ -242,37 +233,59 @@ class AsyncGenericBackend(BackendCore):
         """Collect a table_select async iterator into a list."""
         return [row async for row in self.table_select(table_name, uri_query, **kwargs)]
 
-    async def _is_audit_table(self, table_name: str) -> bool:
+    async def _table_exists(self, table_name: str, session=None) -> bool:
+        """
+        Return whether a table exists.
+
+        Implemented with a non-raising catalog lookup, so it is safe to run on
+        a caller-supplied session. Backend-specific.
+        """
+        raise NotImplementedError
+
+    async def _is_audit_table(self, table_name: str, session=None) -> bool:
         """
         Determine whether a given table is an audit table.
 
-        Deliberately runs on its own session: the probe may query a table
-        that no longer exists, and on PostgreSQL a caught error would
-        otherwise abort the caller's transaction.
+        Existence is checked with a non-raising catalog lookup on the given
+        session, so the probe is session-consistent and cannot poison the
+        surrounding transaction. The sample row is then read on the same
+        session; a table that exists but is not audit-shaped yields False.
         """
-        sufficient = False
-        necessary = table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX)
-        if not necessary:
-            return necessary and sufficient
-        try:
-            dummy_event = AuditTransaction("").event_read(query="")
-            result = None
-            async for row in self._yield_results(
-                f"select data from {self._fqtn(table_name)} limit 1"
-            ):
-                result = row
-                break
-            if result:
-                sufficient = (
+        if not table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX):
+            return False
+        async with self._session_scope(session) as session:
+            if not await self._table_exists(table_name, session):
+                return False
+            try:
+                dummy_event = AuditTransaction("").event_read(query="")
+                result = None
+                async for row in self._yield_results(
+                    f"select data from {self._fqtn(table_name)} limit 1",
+                    session=session,
+                ):
+                    result = row
+                    break
+                if not result:
+                    return False
+                return bool(
                     uuid.UUID(result.get("transaction_id"))
                     and uuid.UUID(result.get("event_id"))
                     and result.get("event") in ["update", "delete", "read", "create"]
                     and result.get("timestamp") is not None
                     and set(result.keys()).difference(dummy_event.keys()) == set()
                 )
-        except Exception:
-            pass
-        return necessary and sufficient
+            except (
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+                IndexError,
+                aiosqlite.OperationalError,
+                psycopg.errors.UndefinedColumn,
+                psycopg.errors.UndefinedTable,
+            ):
+                logging.debug("Table %s is not audit-shaped", table_name)
+                return False
 
     async def table_select(
         self,
@@ -292,8 +305,8 @@ class AsyncGenericBackend(BackendCore):
         returned async iterable before closing the session.
         """
         apply_cutoff = (
-            await self._is_audit_table(table_name)
-            and not await self._audit_source_exists(table_name)
+            await self._is_audit_table(table_name, session=session)
+            and not await self._audit_source_exists(table_name, session=session)
             and self.backup_days is not None
         )
         if "*" in table_name:
@@ -343,8 +356,8 @@ class AsyncGenericBackend(BackendCore):
     ) -> bool:
         """Delete data from table or drop table."""
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
-        is_audit_table = await self._is_audit_table(table_name)
         async with self._session_scope(session) as session:
+            is_audit_table = await self._is_audit_table(table_name, session=session)
             audit_data = []
             if audit:
                 tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
@@ -375,7 +388,7 @@ class AsyncGenericBackend(BackendCore):
         session=None,
     ) -> bool:
         """Update records in table."""
-        if await self._is_audit_table(table_name):
+        if await self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
         async with self._session_scope(session) as session:
@@ -406,7 +419,7 @@ class AsyncGenericBackend(BackendCore):
         """
 
         # Protection: Cannot alter audit tables directly
-        if await self._is_audit_table(table_name):
+        if await self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
 
         sql = self.generator_class(
@@ -490,6 +503,17 @@ class AsyncSqliteBackend(AsyncGenericBackend):
             )
             res = await session.fetchall()
         return [r[0] for r in res] if res else []
+
+    async def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via sqlite_master (never raises)."""
+        name = f"{self.schema}{self.sep}{table_name}"
+        async with self._session_scope(session) as session:
+            await session.execute(
+                "select 1 from sqlite_master where type = 'table' and name = ?",
+                (name,),
+            )
+            res = await session.fetchone()
+        return res is not None
 
     async def _create_all_view(
         self,
@@ -689,6 +713,17 @@ class AsyncPostgresBackend(AsyncGenericBackend):
             )
             res = await session.fetchall()
         return [r[0] for r in res] if res else []
+
+    async def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via pg_tables (never raises)."""
+        async with self._session_scope(session) as session:
+            await session.execute(
+                "select exists(select 1 from pg_tables "
+                "where schemaname = %s and tablename = %s)",
+                (self.schema, table_name),
+            )
+            res = await session.fetchone()
+        return res[0]
 
     async def _create_all_view(
         self,
