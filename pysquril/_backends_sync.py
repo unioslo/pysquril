@@ -19,6 +19,7 @@ import logging
 import sqlite3
 import uuid
 
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Union, Iterable, Optional, Any, Callable
 from urllib.parse import unquote
@@ -52,21 +53,23 @@ class GenericBackend(BackendCore):
 
     # _diff_entries and _get_pk_value are now in BackendCore
 
-    def _audit_source_exists(self, table_name: str) -> bool:
+    def _audit_source_exists(self, table_name: str, session=None) -> bool:
         """
         Check if the table from which audit records originate
         still exists.
 
+        Uses a non-raising catalog lookup on the given session, so it is
+        session-consistent (it sees the session's own uncommitted DDL) and
+        cannot poison the surrounding transaction.
         """
-        exists = False
-        try:
-            current_data = list(self.table_select(audit_table_src(table_name), ""))
-            exists = True
-        except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
-            pass
-        return exists
+        return self._table_exists(audit_table_src(table_name), session)
 
-    def table_restore(self, table_name: str, uri_query: str) -> dict:
+    def table_restore(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         """
         Restore rows to previous states, as recorded in the audit log.
 
@@ -101,6 +104,9 @@ class GenericBackend(BackendCore):
         this function: that is, restore events are not restored,
         only updates and deletes.
 
+        If a session is passed, the entire restore runs on that session
+        and commits or rolls back as a single unit.
+
         """
         work_done = {"restores": [], "updates": []}
 
@@ -109,109 +115,130 @@ class GenericBackend(BackendCore):
             return work_done
 
         # ensure we have enough information
-        sql = self.generator_class(
-            "", uri_query
-        )
+        sql = self.generator_class("", uri_query)
         message = sql.message
         primary_key = sql.parsed_uri_query.primary_key
 
-        # fetch a copy of the current state, and all primay keys
-        table_exists = False
-        try:
-            current_data = list(self.table_select(table_name, ""))
-            current_pks = list(self.table_select(table_name, f"select={primary_key}"))
-            table_exists = True
-        except (sqlite3.OperationalError, psycopg2.errors.UndefinedTable):
-            current_data = []
-            current_pks = []
-        # fetch the desired state
+        # fetch the desired state and apply it in one session/transaction
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc"  # sorted from old to new
-        target_data = list(self.table_select(audit_table(table_name), uri_query))
-        if not target_data:
-            return work_done  # nothing to do
-        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
-        session_func = self._session_func()
-        try:
-            # ensure the table exists, may have been deleted
-            with session_func(self.engine) as session:
-                self.table_create(table_name, session)
-        except psycopg2.errors.DuplicateObject as e:
-            pass  # already exists
-        handled = []
-        with session_func(self.engine) as session:
-            for entry in target_data:
-                target_entry = entry.get("previous")
-                pk_value = (
-                    self._get_pk_value(primary_key, target_entry)
-                    if target_entry
-                    else None
-                )
-                if pk_value in handled or entry.get("event") in [
-                    "restore",
-                    "create",
-                    "read",
-                ]:
-                    continue
-                target_entry = entry.get("previous")
-                result = list(
-                    self.table_select(
-                        table_name,
-                        f"where={primary_key}=eq.{pk_value}",
-                    )
-                )
-                if len(result) > 1:
-                    raise DataIntegrityError(
-                        f"primary_key: {primary_key} is not unique"
-                    )
-                elif not result:
-                    # then it is currently deleted
-                    self.table_insert(table_name, target_entry, session)
-                    self.table_insert(
-                        audit_table(table_name),
-                        tsc.event_restore(
-                            diff=target_entry, previous=None, query=uri_query
-                        ),
-                        session,
-                    )
-                    work_done["restores"].append(entry)
-                else:
-                    current_entry = result[0]
-                    to_change, to_remove, to_add = self._diff_entries(current_entry, target_entry)
-                    if to_change or to_add:
-                        # note: query construction depends on the constraint
-                        # that only top-level keys are allowed in set operations
-                        keys = set(to_change.keys()).union(to_add.keys())
-                        to_change.update(to_add)
-                        set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
-                        self.table_update(
-                            table_name,
-                            set_query,
-                            data=to_change,
-                            tsc=tsc,
-                            session=session,
-                        )
-                        work_done["updates"].append(entry)
-                    if to_remove:
-                        keys = list(map(lambda x: f"-{x}", to_remove.keys()))
-                        set_query = f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
-                        self.table_update(
-                            table_name,
-                            set_query,
-                            data=None,
-                            tsc=tsc,
-                            session=session,
-                        )
-                        work_done["updates"].append(entry)
-                handled.append(pk_value)
+        with self._session_scope(session) as session:
+            target_data = list(
+                self.table_select(audit_table(table_name), uri_query, session=session)
+            )
+            if not target_data:
+                return work_done  # nothing to do
+            self._restore_entries(
+                table_name,
+                uri_query,
+                primary_key,
+                target_data,
+                message,
+                session,
+                work_done,
+            )
         return work_done
 
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _restore_entries(
+        self,
+        table_name: str,
+        uri_query: str,
+        primary_key: str,
+        target_data: list,
+        message: Optional[str],
+        session: Union[sqlite3.Cursor, psycopg2.extensions.cursor],
+        work_done: dict,
+    ) -> None:
+        """Apply restore entries onto a single, caller-owned session."""
+        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
+        # ensure the table exists, may have been deleted
+        session.execute("SAVEPOINT pysquril_restore_create")
+        try:
+            self.table_create(table_name, session)
+        except psycopg2.errors.DuplicateObject:
+            session.execute("ROLLBACK TO SAVEPOINT pysquril_restore_create")
+        handled = []
+        for entry in target_data:
+            target_entry = entry.get("previous")
+            pk_value = (
+                self._get_pk_value(primary_key, target_entry) if target_entry else None
+            )
+            if pk_value in handled or entry.get("event") in [
+                "restore",
+                "create",
+                "read",
+            ]:
+                continue
+            target_entry = entry.get("previous")
+            result = list(
+                self.table_select(
+                    table_name,
+                    f"where={primary_key}=eq.{pk_value}",
+                    session=session,
+                )
+            )
+            if len(result) > 1:
+                raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
+            elif not result:
+                # then it is currently deleted
+                self.table_insert(table_name, target_entry, session)
+                self.table_insert(
+                    audit_table(table_name),
+                    tsc.event_restore(
+                        diff=target_entry, previous=None, query=uri_query
+                    ),
+                    session,
+                )
+                work_done["restores"].append(entry)
+            else:
+                current_entry = result[0]
+                to_change, to_remove, to_add = self._diff_entries(
+                    current_entry, target_entry
+                )
+                if to_change or to_add:
+                    # note: query construction depends on the constraint
+                    # that only top-level keys are allowed in set operations
+                    keys = set(to_change.keys()).union(to_add.keys())
+                    to_change.update(to_add)
+                    set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
+                    self.table_update(
+                        table_name,
+                        set_query,
+                        data=to_change,
+                        tsc=tsc,
+                        session=session,
+                    )
+                    work_done["updates"].append(entry)
+                if to_remove:
+                    keys = list(map(lambda x: f"-{x}", to_remove.keys()))
+                    set_query = (
+                        f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
+                    )
+                    self.table_update(
+                        table_name,
+                        set_query,
+                        data=None,
+                        tsc=tsc,
+                        session=session,
+                    )
+                    work_done["updates"].append(entry)
+            handled.append(pk_value)
+
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """
         Return a list of all existing instances of the {table_name}
         across all schemas, including the schema name: {schema}.{table_name}.
 
+        """
+        raise NotImplementedError
+
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """
+        Return whether a table exists.
+
+        Implemented with a non-raising catalog lookup, so it is safe to run on
+        a caller-supplied session. Backend-specific.
         """
         raise NotImplementedError
 
@@ -239,7 +266,7 @@ class GenericBackend(BackendCore):
         """
         raise NotImplementedError
 
-    def _define_all_view(self, table_name: str) -> None:
+    def _define_all_view(self, table_name: str, session=None) -> None:
         """
         To allow queries across all schemas, for a given table.
 
@@ -268,47 +295,86 @@ class GenericBackend(BackendCore):
         to query a given table across all schemas.
 
         """
-        tables = self._tables_in_schemas(table_name)
-        if not tables:
-            return  # when the last one is deleted
-        unions = " union all ".join([f"select * from {t}" for t in tables])
-        view_name = self._fqtn(table_name, schema_name="all")
-        session_func = self._session_func()
-        with session_func(self.engine) as session:
+        with self._session_scope(session) as session:
+            tables = self._tables_in_schemas(table_name, session=session)
+            if not tables:
+                return  # when the last one is deleted
+            unions = " union all ".join([f"select * from {t}" for t in tables])
+            view_name = self._fqtn(table_name, schema_name="all")
             self._create_all_view(view_name, unions, session)
 
     # _query_for_select and _query_for_select_many are now in BackendCore
 
-    def _yield_results(self, query: str) -> Iterable[tuple]:
+    @contextmanager
+    def _session_scope(
+        self,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> Iterable[Union[sqlite3.Cursor, psycopg2.extensions.cursor]]:
+        """
+        Yield the caller's session, or open (and commit/rollback) a fresh one.
+
+        Lets methods share a single body whether or not a session was passed.
+        """
+        if session is not None:
+            yield session
+        else:
+            with self._session_func()(self.engine) as session:
+                yield session
+
+    def _yield_results(
+        self,
+        query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> Iterable[tuple]:
+        with self._session_scope(session) as session:
+            session.execute(query)
+            for row in session:
+                yield self._decode_row(row)
+
+    def _decode_row(self, row: Any) -> Any:
         raise NotImplementedError
 
-    def _is_audit_table(self, table_name: str) -> bool:
+    def _is_audit_table(self, table_name: str, session=None) -> bool:
         """
         Determine whether a given table is an audit table.
 
+        Existence is checked with a non-raising catalog lookup on the given
+        session, so the probe is session-consistent and cannot poison the
+        surrounding transaction. The sample row is then read on the same
+        session; a table that exists but is not audit-shaped yields False.
         """
-        sufficient = False
-        neccesary = table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX)
-        if not neccesary:
-            return neccesary and sufficient
-        try:
-            dummy_event = AuditTransaction("").event_read(query="")
-            result = list(
-                self._yield_results(
-                    f"select data from {self._fqtn(table_name)} limit 1"
+        if not table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX):
+            return False
+        with self._session_scope(session) as session:
+            if not self._table_exists(table_name, session):
+                return False
+            try:
+                dummy_event = AuditTransaction("").event_read(query="")
+                result = list(
+                    self._yield_results(
+                        f"select data from {self._fqtn(table_name)} limit 1",
+                        session=session,
+                    )
+                )[0]
+                return bool(
+                    uuid.UUID(result.get("transaction_id"))
+                    and uuid.UUID(result.get("event_id"))
+                    and result.get("event") in ["update", "delete", "read", "create"]
+                    and result.get("timestamp") is not None
+                    and set(result.keys()).difference(dummy_event.keys()) == set()
                 )
-            )[0]
-            sufficient = (
-                uuid.UUID(result.get("transaction_id"))
-                and uuid.UUID(result.get("event_id"))
-                and result.get("event") in ["update", "delete", "read", "create"]
-                and result.get("timestamp") is not None
-                and set(result.keys()).difference(dummy_event.keys()) == set()
-            )
-
-        except Exception as e:
-            pass
-        return neccesary and sufficient
+            except (
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+                IndexError,
+                sqlite3.OperationalError,
+                psycopg2.errors.UndefinedColumn,
+                psycopg2.errors.UndefinedTable,
+            ):
+                logging.debug("Table %s is not audit-shaped", table_name)
+                return False
 
     def table_select(
         self,
@@ -317,6 +383,7 @@ class GenericBackend(BackendCore):
         data: Optional[Union[dict, list]] = None,
         exclude_endswith: list = [],
         audit: bool = False,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> Iterable[tuple]:
         """
         Yield a resulset associated with a table_name, and a uri_query.
@@ -328,15 +395,22 @@ class GenericBackend(BackendCore):
 
         Optionally exclude tables that end with a specific pattern.
 
+        If a session is passed, the query is executed on that session
+        (allowing read-after-write within a single connection/transaction).
+        The results are yielded lazily, so the caller must fully consume the
+        returned iterable before closing the session.
+
         """
         apply_cutoff = (
-            self._is_audit_table(table_name)
-            and not self._audit_source_exists(table_name)
+            self._is_audit_table(table_name, session=session)
+            and not self._audit_source_exists(table_name, session=session)
             and self.backup_days is not None
         )
         if "*" in table_name:
             tables = self.tables_list(
-                exclude_endswith=exclude_endswith, table_like=table_name
+                exclude_endswith=exclude_endswith,
+                table_like=table_name,
+                session=session,
             )
             if not tables:
                 return iter([])
@@ -356,8 +430,15 @@ class GenericBackend(BackendCore):
             tsc = AuditTransaction(
                 identity=self.requestor, identity_name=self.requestor_name
             )
-            self.table_insert(audit_table(table_name), tsc.event_read(query=uri_query))
-        return self._yield_results(query)
+            if session is not None:
+                # ensure the audit table exists within the caller's transaction
+                self.table_create(audit_table(table_name), session)
+            self.table_insert(
+                audit_table(table_name),
+                tsc.event_read(query=uri_query),
+                session=session,
+            )
+        return self._yield_results(query, session=session)
 
     def table_delete(
         self,
@@ -375,28 +456,22 @@ class GenericBackend(BackendCore):
         data is being deleted completely for compliance purposes.
 
         """
-        audit_data = []
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
-        is_audit_table = self._is_audit_table(table_name)
-        if audit:
-            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            for row in self.table_select(table_name, uri_query):
-                audit_data.append(
-                    tsc.event_delete(diff=None, previous=row, query=uri_query)
-                )
-        if session:
+        with self._session_scope(session) as session:
+            is_audit_table = self._is_audit_table(table_name, session=session)
+            audit_data = []
+            if audit:
+                tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+                for row in self.table_select(table_name, uri_query, session=session):
+                    audit_data.append(
+                        tsc.event_delete(diff=None, previous=row, query=uri_query)
+                    )
             session.execute(sql.delete_query)
             if not is_audit_table and audit:
                 self.table_create(audit_table(table_name), session)
                 self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            with self._session_func()(self.engine) as session:
-                session.execute(sql.delete_query)
-                if not is_audit_table and audit:
-                    self.table_create(audit_table(table_name), session)
-                    self.table_insert(audit_table(table_name), audit_data, session)
-        if update_all_view:
-            self._define_all_view(table_name)
+            if update_all_view:
+                self._define_all_view(table_name, session)
         return True
 
     def _do_update(
@@ -418,60 +493,74 @@ class GenericBackend(BackendCore):
         Update one or more keys, recording changes in the audit log.
 
         """
-        if self._is_audit_table(table_name):
+        if self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
-        audit_data = []
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
-        tsc = (
-            AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            if not tsc
-            else tsc
-        )
-        for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(
-                tsc.event_update(diff=data, previous=val, query=uri_query)
+        with self._session_scope(session) as session:
+            tsc = (
+                AuditTransaction(self.requestor, sql.message, self.requestor_name)
+                if not tsc
+                else tsc
             )
-        if session:
+            audit_data = []
+            for val in self.table_select(
+                table_name, uri_query, data=data, session=session
+            ):
+                audit_data.append(
+                    tsc.event_update(diff=data, previous=val, query=uri_query)
+                )
             self._do_update(session, sql.update_query)
+            self.table_create(audit_table(table_name), session)
             self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            with self._session_func()(self.engine) as session:
-                self._do_update(session, sql.update_query)
-            self.table_insert(audit_table(table_name), audit_data)
         return True
 
-    def table_alter(self, table_name: str, uri_query: str) -> dict:
+    def table_alter(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         """
         Alter the name of a table, and its audit table (if it exists).
         Return information about which tables were altered.
 
+        If a session is passed, both alters are executed on that session,
+        so they commit or roll back together. A savepoint isolates the
+        audit table alter, allowing a missing audit table to be tolerated
+        without aborting the surrounding transaction.
+
         """
-        if self._is_audit_table(table_name):
+        if self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(
             f"{self._fqtn(table_name)}",
             uri_query,
             table_name_func=self._fqtn,
         )
-        with self._session_func()(self.engine) as session:
-            session.execute(sql.alter_query)
+        audit_table_name = audit_table(table_name)
+        audit_sql = self.generator_class(
+            f"{self._fqtn(audit_table_name)}",
+            uri_query,
+            table_name_func=self._fqtn,
+            audit=True,
+        )
         altered = {"tables": [table_name]}
-        try:
-            audit_table_name = audit_table(table_name)
-            sql = self.generator_class(
-                f"{self._fqtn(audit_table_name)}",
-                uri_query,
-                table_name_func=self._fqtn,
-                audit=True,
-            )
-            with self._session_func()(self.engine) as session:
-                session.execute(sql.alter_query)
-            altered["tables"].append(audit_table_name)
-        except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
-            pass
+        with self._session_scope(session) as session:
+            session.execute(sql.alter_query)
+            session.execute("SAVEPOINT pysquril_alter_audit")
+            try:
+                session.execute(audit_sql.alter_query)
+                altered["tables"].append(audit_table_name)
+            except (psycopg2.errors.UndefinedTable, sqlite3.OperationalError):
+                session.execute("ROLLBACK TO SAVEPOINT pysquril_alter_audit")
         return altered
 
-    def _audit_insert(self, table_name: str, data: Union[str, list]) -> bool:
+    def _audit_insert(
+        self,
+        table_name: str,
+        data: Union[str, list],
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> bool:
         tsc = AuditTransaction(
             identity=self.requestor, identity_name=self.requestor_name
         )
@@ -481,7 +570,10 @@ class GenericBackend(BackendCore):
                 audit_data.append(tsc.event_create(diff=row))
         else:
             audit_data = [tsc.event_create(diff=data)]
-        self.table_insert(audit_table(table_name), audit_data)
+        if session is not None:
+            # ensure the audit table exists within the caller's transaction
+            self.table_create(audit_table(table_name), session)
+        self.table_insert(audit_table(table_name), audit_data, session=session)
         return True
 
 
@@ -556,19 +648,29 @@ class SqliteBackend(GenericBackend):
         schema = schema_name or self.schema
         return f'"{schema}{self.sep}{table_name}"'
 
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """
         Return a list of all existing instances of the {table_name}
         across all schemas, including the schema name: {schema}.{table_name}.
 
         """
-        with sqlite_session(self.engine) as session:
+        with self._session_scope(session) as session:
             res = session.execute(
                 f"""select name FROM sqlite_master where type = 'table'
                     and name like '{self.schema_pattern}%{table_name}'
                 """
             ).fetchall()
         return [r[0] for r in res] if res else []
+
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via sqlite_master (never raises)."""
+        name = f"{self.schema}{self.sep}{table_name}"
+        with self._session_scope(session) as session:
+            res = session.execute(
+                "select 1 from sqlite_master where type = 'table' and name = ?",
+                (name,),
+            ).fetchone()
+        return res is not None
 
     def _create_all_view(
         self, view_name: str, unions: str, session: sqlite3.Cursor
@@ -585,13 +687,14 @@ class SqliteBackend(GenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session: Optional[sqlite3.Cursor] = None,
     ) -> list:
         table_like_filter = ""
         if table_like:
             pattern = table_like.replace("*", "%")
             table_like_filter = f"and name like '{pattern}'"
         query = f"select name FROM sqlite_master where type = 'table' {table_like_filter} order by name asc"
-        with sqlite_session(self.engine) as session:
+        with self._session_scope(session) as session:
             res = session.execute(query).fetchall()
         if not res:
             return []
@@ -638,23 +741,27 @@ class SqliteBackend(GenericBackend):
                     target.append((json.dumps(element),))
             elif dtype is dict:
                 target.append((json.dumps(data),))
-            if session:
+            if session is not None:
                 # in this case we are re-using a session
                 # from a context manager estabilshed by the caller
                 # and if an exception is raised, the caller handles it
                 session.executemany(insert_stmt, target)
+                if audit:
+                    self._audit_insert(table_name, data, session)
             else:
                 try:
-                    with sqlite_session(self.engine) as session:
+                    with self._session_scope() as session:
                         session.executemany(insert_stmt, target)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
                 except (sqlite3.ProgrammingError, sqlite3.OperationalError) as e:
-                    with sqlite_session(self.engine) as session:
+                    with self._session_scope() as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
-                    if update_all_view:
-                        self._define_all_view(table_name)
-            if audit:
-                self._audit_insert(table_name, data)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
+                        if update_all_view:
+                            self._define_all_view(table_name, session)
             return True
         except sqlite3.IntegrityError as e:
             logging.info("Ignoring duplicate row")
@@ -669,10 +776,8 @@ class SqliteBackend(GenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(self, query: str) -> Iterable[tuple]:
-        with sqlite_session(self.engine) as session:
-            for row in session.execute(query):
-                yield json.loads(row[0])
+    def _decode_row(self, row: Any) -> Any:
+        return json.loads(row[0])
 
     def _do_update(self, session: sqlite3.Cursor, query: str) -> None:
         session.executescript(query)
@@ -734,13 +839,13 @@ class PostgresBackend(GenericBackend):
         schema = '"all"' if schema == "all" else schema  # all is a reserved word
         return f'{schema}{self.sep}"{table_name}"'
 
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """
         Return a list of all existing instances of the {table_name}
         across all schemas, including the schema name: {schema}.{table_name}.
 
         """
-        with postgres_session(self.engine) as session:
+        with self._session_scope(session) as session:
             session.execute(
                 f"""select concat_ws('.', table_schema, concat('"', table_name, '"'))
                     from information_schema.tables where table_schema
@@ -749,6 +854,16 @@ class PostgresBackend(GenericBackend):
             )
             res = session.fetchall()
         return [r[0] for r in res] if res else []
+
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via pg_tables (never raises)."""
+        with self._session_scope(session) as session:
+            session.execute(
+                "select exists(select 1 from pg_tables "
+                "where schemaname = %s and tablename = %s)",
+                (self.schema, table_name),
+            )
+            return session.fetchone()[0]
 
     def _create_all_view(
         self, view_name: str, unions: str, session: psycopg2.extensions.cursor
@@ -771,6 +886,7 @@ class PostgresBackend(GenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session: Optional[psycopg2.extensions.cursor] = None,
     ) -> list:
         table_like_filter = ""
         if table_like:
@@ -778,7 +894,7 @@ class PostgresBackend(GenericBackend):
             table_like_filter = f"and table_name like '{pattern}'"
         query = f"""select table_name from information_schema.tables
             where table_schema = '{self.schema}' {table_like_filter} order by table_name asc"""
-        with postgres_session(self.engine) as session:
+        with self._session_scope(session) as session:
             session.execute(query)
             res = session.fetchall()
         if not res:
@@ -836,23 +952,27 @@ class PostgresBackend(GenericBackend):
                     target.append((json.dumps(element),))
             elif dtype is dict:
                 target.append((json.dumps(data),))
-            if session:
+            if session is not None:
                 # in this case we are re-using a session
                 # from a context manager estabilshed by the caller
                 # and if an exception is raised, the caller handles it
                 session.executemany(insert_stmt, target)
+                if audit:
+                    self._audit_insert(table_name, data, session)
             else:
                 try:
-                    with postgres_session(self.engine) as session:
+                    with self._session_scope() as session:
                         session.executemany(insert_stmt, target)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
                 except (psycopg2.ProgrammingError, psycopg2.OperationalError) as e:
-                    with postgres_session(self.engine) as session:
+                    with self._session_scope() as session:
                         self.table_create(table_name, session)
                         session.executemany(insert_stmt, target)
-                    if update_all_view:
-                        self._define_all_view(table_name)
-            if audit:
-                self._audit_insert(table_name, data)
+                        if audit:
+                            self._audit_insert(table_name, data, session)
+                        if update_all_view:
+                            self._define_all_view(table_name, session)
             return True
         except psycopg2.IntegrityError as e:
             logging.info("Ignoring duplicate row")
@@ -867,11 +987,8 @@ class PostgresBackend(GenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(self, query: str) -> Iterable[tuple]:
-        with postgres_session(self.engine) as session:
-            session.execute(query)
-            for row in session:
-                yield row[0]
+    def _decode_row(self, row: Any) -> Any:
+        return row[0]
 
     def _do_update(self, session: psycopg2.extensions.cursor, query: str) -> None:
         session.execute(query)

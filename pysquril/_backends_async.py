@@ -20,7 +20,8 @@ import logging
 import uuid
 
 from collections.abc import AsyncIterable
-from typing import Optional, Callable, Union
+from contextlib import asynccontextmanager
+from typing import Any, Optional, Callable, Union
 
 from pysquril._backends_core import BackendCore, AuditTransaction
 from pysquril._connection import async_sqlite_session, async_postgres_session
@@ -47,25 +48,25 @@ class AsyncGenericBackend(BackendCore):
     # _diff_entries, _get_pk_value, _query_for_select, _query_for_select_many
     # are inherited from BackendCore
 
-    async def _audit_source_exists(self, table_name: str) -> bool:
+    async def _audit_source_exists(self, table_name: str, session=None) -> bool:
         """
         Check if the table from which audit records originate still exists.
-        """
-        exists = False
-        try:
-            current_data = []
-            async for row in self.table_select(audit_table_src(table_name), ""):
-                current_data.append(row)
-                break  # Just need to know if any data exists
-            exists = len(current_data) > 0
-        except Exception:
-            pass
-        return exists
 
-    async def table_restore(self, table_name: str, uri_query: str) -> dict:
+        Uses a non-raising catalog lookup on the given session, so it is
+        session-consistent (it sees the session's own uncommitted DDL) and
+        cannot poison the surrounding transaction.
+        """
+        return await self._table_exists(audit_table_src(table_name), session)
+
+    async def table_restore(
+        self, table_name: str, uri_query: str, session=None
+    ) -> dict:
         """
         Restore rows to previous states, as recorded in the audit log.
         Async version of the restore operation.
+
+        If a session is passed, the entire restore runs on that session
+        and commits or rolls back as a single unit.
         """
         work_done = {"restores": [], "updates": []}
 
@@ -77,150 +78,214 @@ class AsyncGenericBackend(BackendCore):
         message = sql.message
         primary_key = sql.parsed_uri_query.primary_key
 
-        # Fetch current state
-        table_exists = False
-        try:
-            current_data = []
-            async for row in self.table_select(table_name, ""):
-                current_data.append(row)
-            current_pks = []
-            async for row in self.table_select(table_name, f"select={primary_key}"):
-                current_pks.append(row)
-            table_exists = True
-        except Exception:
-            current_data = []
-            current_pks = []
-
-        # Fetch desired state
+        # Fetch the desired state and apply it in one session/transaction
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc"
-        target_data = []
-        async for row in self.table_select(audit_table(table_name), uri_query):
-            target_data.append(row)
 
-        if not target_data:
-            return work_done
-
-        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
-        session_func = self._session_func()
-
-        try:
-            async with session_func(self.engine) as session:
-                await self.table_create(table_name, session)
-        except Exception:
-            pass  # Table already exists
-
-        handled = []
-        async with session_func(self.engine) as session:
-            for entry in target_data:
-                target_entry = entry.get("previous")
-                pk_value = (
-                    self._get_pk_value(primary_key, target_entry)
-                    if target_entry
-                    else None
-                )
-                if pk_value in handled or entry.get("event") in [
-                    "restore",
-                    "create",
-                    "read",
-                ]:
-                    continue
-                target_entry = entry.get("previous")
-                result = []
-                async for row in self.table_select(
-                    table_name,
-                    f"where={primary_key}=eq.{pk_value}",
-                ):
-                    result.append(row)
-
-                if len(result) > 1:
-                    raise DataIntegrityError(
-                        f"primary_key: {primary_key} is not unique"
-                    )
-                elif not result:
-                    await self.table_insert(table_name, target_entry, session)
-                    await self.table_insert(
-                        audit_table(table_name),
-                        tsc.event_restore(
-                            diff=target_entry, previous=None, query=uri_query
-                        ),
-                        session,
-                    )
-                    work_done["restores"].append(entry)
-                else:
-                    current_entry = result[0]
-                    to_change, to_remove, to_add = self._diff_entries(
-                        current_entry, target_entry
-                    )
-                    if to_change or to_add:
-                        to_change.update(to_add)
-                        set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
-                        await self.table_update(
-                            table_name,
-                            set_query,
-                            data=to_change,
-                            tsc=tsc,
-                            session=session,
-                        )
-                        work_done["updates"].append(entry)
-                    if to_remove:
-                        keys = list(map(lambda x: f"-{x}", to_remove.keys()))
-                        set_query = (
-                            f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
-                        )
-                        await self.table_update(
-                            table_name,
-                            set_query,
-                            data=None,
-                            tsc=tsc,
-                            session=session,
-                        )
-                        work_done["updates"].append(entry)
-                handled.append(pk_value)
+        async with self._session_scope(session) as session:
+            target_data = await self._select_all(
+                audit_table(table_name), uri_query, session=session
+            )
+            if not target_data:
+                return work_done
+            await self._restore_entries(
+                table_name,
+                uri_query,
+                primary_key,
+                target_data,
+                message,
+                session,
+                work_done,
+            )
 
         return work_done
 
-    async def _define_all_view(self, table_name: str) -> None:
+    async def _restore_entries(
+        self,
+        table_name: str,
+        uri_query: str,
+        primary_key: str,
+        target_data: list,
+        message: Optional[str],
+        session,
+        work_done: dict,
+    ) -> None:
+        """Apply restore entries onto a single, caller-owned session."""
+        tsc = AuditTransaction(self.requestor, message, self.requestor_name)
+        # ensure the table exists, may have been deleted
+        await session.execute("SAVEPOINT pysquril_restore_create")
+        try:
+            await self.table_create(table_name, session)
+        except Exception:
+            await session.execute("ROLLBACK TO SAVEPOINT pysquril_restore_create")
+        handled = []
+        for entry in target_data:
+            target_entry = entry.get("previous")
+            pk_value = (
+                self._get_pk_value(primary_key, target_entry) if target_entry else None
+            )
+            if pk_value in handled or entry.get("event") in [
+                "restore",
+                "create",
+                "read",
+            ]:
+                continue
+            target_entry = entry.get("previous")
+            result = await self._select_all(
+                table_name,
+                f"where={primary_key}=eq.{pk_value}",
+                session=session,
+            )
+
+            if len(result) > 1:
+                raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
+            elif not result:
+                await self.table_insert(table_name, target_entry, session)
+                await self.table_insert(
+                    audit_table(table_name),
+                    tsc.event_restore(
+                        diff=target_entry, previous=None, query=uri_query
+                    ),
+                    session,
+                )
+                work_done["restores"].append(entry)
+            else:
+                current_entry = result[0]
+                to_change, to_remove, to_add = self._diff_entries(
+                    current_entry, target_entry
+                )
+                if to_change or to_add:
+                    to_change.update(to_add)
+                    set_query = f"set={','.join(to_change.keys())}&where={primary_key}=eq.{pk_value}"
+                    await self.table_update(
+                        table_name,
+                        set_query,
+                        data=to_change,
+                        tsc=tsc,
+                        session=session,
+                    )
+                    work_done["updates"].append(entry)
+                if to_remove:
+                    keys = list(map(lambda x: f"-{x}", to_remove.keys()))
+                    set_query = (
+                        f"set={','.join(keys)}&where={primary_key}=eq.{pk_value}"
+                    )
+                    await self.table_update(
+                        table_name,
+                        set_query,
+                        data=None,
+                        tsc=tsc,
+                        session=session,
+                    )
+                    work_done["updates"].append(entry)
+            handled.append(pk_value)
+
+    async def _define_all_view(self, table_name: str, session=None) -> None:
         """Create or update view for cross-schema queries."""
-        tables = await self._tables_in_schemas(table_name)
-        if not tables:
-            return
-        unions = " union all ".join([f"select * from {t}" for t in tables])
-        view_name = self._fqtn(table_name, schema_name="all")
-        session_func = self._session_func()
-        async with session_func(self.engine) as session:
+        async with self._session_scope(session) as session:
+            tables = await self._tables_in_schemas(table_name, session=session)
+            if not tables:
+                return
+            unions = " union all ".join([f"select * from {t}" for t in tables])
+            view_name = self._fqtn(table_name, schema_name="all")
             await self._create_all_view(view_name, unions, session)
 
-    async def _yield_results(self, query: str) -> AsyncIterable[tuple]:
+    async def _audit_insert(self, table_name: str, data, session=None) -> bool:
+        """Record create events for inserted rows."""
+        tsc = AuditTransaction(
+            identity=self.requestor, identity_name=self.requestor_name
+        )
+        if isinstance(data, dict):
+            data = [data]
+        audit_data = [tsc.event_create(diff=entry) for entry in data]
+        if session is not None:
+            # ensure the audit table exists within the caller's transaction
+            await self.table_create(audit_table(table_name), session)
+        await self.table_insert(audit_table(table_name), audit_data, session=session)
+        return True
+
+    @asynccontextmanager
+    async def _session_scope(self, session=None):
+        """
+        Yield the caller's session, or open (and commit/rollback) a fresh one.
+
+        Lets methods share a single body whether or not a session was passed.
+        """
+        if session is not None:
+            yield session
+        else:
+            async with self._session_func()(self.engine) as session:
+                yield session
+
+    async def _yield_results(self, query: str, session=None) -> AsyncIterable[tuple]:
         """Execute query and yield results asynchronously."""
+        async with self._session_scope(session) as session:
+            await session.execute(query)
+            async for row in session:
+                if row and row[0]:
+                    yield self._decode_row(row)
+
+    def _decode_row(self, row: Any) -> Any:
         raise NotImplementedError
 
-    async def _is_audit_table(self, table_name: str) -> bool:
-        """Determine whether a given table is an audit table."""
-        sufficient = False
-        necessary = table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX)
-        if not necessary:
-            return necessary and sufficient
-        try:
-            dummy_event = AuditTransaction("").event_read(query="")
-            result = None
-            async for row in self._yield_results(
-                f"select data from {self._fqtn(table_name)} limit 1"
-            ):
-                result = row
-                break
-            if result:
-                sufficient = (
+    async def _select_all(self, table_name: str, uri_query: str, **kwargs) -> list:
+        """Collect a table_select async iterator into a list."""
+        return [row async for row in self.table_select(table_name, uri_query, **kwargs)]
+
+    async def _table_exists(self, table_name: str, session=None) -> bool:
+        """
+        Return whether a table exists.
+
+        Implemented with a non-raising catalog lookup, so it is safe to run on
+        a caller-supplied session. Backend-specific.
+        """
+        raise NotImplementedError
+
+    async def _is_audit_table(self, table_name: str, session=None) -> bool:
+        """
+        Determine whether a given table is an audit table.
+
+        Existence is checked with a non-raising catalog lookup on the given
+        session, so the probe is session-consistent and cannot poison the
+        surrounding transaction. The sample row is then read on the same
+        session; a table that exists but is not audit-shaped yields False.
+        """
+        if not table_name.endswith(AUDIT_SEPARATOR + AUDIT_SUFFIX):
+            return False
+        async with self._session_scope(session) as session:
+            if not await self._table_exists(table_name, session):
+                return False
+            try:
+                dummy_event = AuditTransaction("").event_read(query="")
+                result = None
+                async for row in self._yield_results(
+                    f"select data from {self._fqtn(table_name)} limit 1",
+                    session=session,
+                ):
+                    result = row
+                    break
+                if not result:
+                    return False
+                return bool(
                     uuid.UUID(result.get("transaction_id"))
                     and uuid.UUID(result.get("event_id"))
                     and result.get("event") in ["update", "delete", "read", "create"]
                     and result.get("timestamp") is not None
                     and set(result.keys()).difference(dummy_event.keys()) == set()
                 )
-        except Exception:
-            pass
-        return necessary and sufficient
+            except (
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+                IndexError,
+                aiosqlite.OperationalError,
+                psycopg.errors.UndefinedColumn,
+                psycopg.errors.UndefinedTable,
+            ):
+                logging.debug("Table %s is not audit-shaped", table_name)
+                return False
 
     async def table_select(
         self,
@@ -229,16 +294,26 @@ class AsyncGenericBackend(BackendCore):
         data: Optional[Union[dict, list]] = None,
         exclude_endswith: list = [],
         audit: bool = False,
+        session=None,
     ) -> AsyncIterable[tuple]:
-        """Yield results associated with a table_name and uri_query."""
+        """
+        Yield results associated with a table_name and uri_query.
+
+        If a session is passed, the query is executed on that session
+        (allowing read-after-write within a single connection/transaction).
+        Results are yielded lazily, so the caller must fully consume the
+        returned async iterable before closing the session.
+        """
         apply_cutoff = (
-            await self._is_audit_table(table_name)
-            and not await self._audit_source_exists(table_name)
+            await self._is_audit_table(table_name, session=session)
+            and not await self._audit_source_exists(table_name, session=session)
             and self.backup_days is not None
         )
         if "*" in table_name:
             tables = await self.tables_list(
-                exclude_endswith=exclude_endswith, table_like=table_name
+                exclude_endswith=exclude_endswith,
+                table_like=table_name,
+                session=session,
             )
             if not tables:
                 return
@@ -259,11 +334,16 @@ class AsyncGenericBackend(BackendCore):
             tsc = AuditTransaction(
                 identity=self.requestor, identity_name=self.requestor_name
             )
+            if session is not None:
+                # ensure the audit table exists within the caller's transaction
+                await self.table_create(audit_table(table_name), session)
             await self.table_insert(
-                audit_table(table_name), tsc.event_read(query=uri_query)
+                audit_table(table_name),
+                tsc.event_read(query=uri_query),
+                session=session,
             )
 
-        async for row in self._yield_results(query):
+        async for row in self._yield_results(query, session=session):
             yield row
 
     async def table_delete(
@@ -275,32 +355,24 @@ class AsyncGenericBackend(BackendCore):
         session=None,
     ) -> bool:
         """Delete data from table or drop table."""
-        audit_data = []
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query)
-        is_audit_table = await self._is_audit_table(table_name)
-        if audit:
-            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-            async for row in self.table_select(table_name, uri_query):
-                audit_data.append(
-                    tsc.event_delete(diff=None, previous=row, query=uri_query)
-                )
-
-        if session:
+        async with self._session_scope(session) as session:
+            is_audit_table = await self._is_audit_table(table_name, session=session)
+            audit_data = []
+            if audit:
+                tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+                async for row in self.table_select(
+                    table_name, uri_query, session=session
+                ):
+                    audit_data.append(
+                        tsc.event_delete(diff=None, previous=row, query=uri_query)
+                    )
             await session.execute(sql.delete_query)
             if not is_audit_table and audit:
                 await self.table_create(audit_table(table_name), session)
                 await self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            async with self._session_func()(self.engine) as session:
-                await session.execute(sql.delete_query)
-                if not is_audit_table and audit:
-                    await self.table_create(audit_table(table_name), session)
-                    await self.table_insert(
-                        audit_table(table_name), audit_data, session
-                    )
-
-        if update_all_view:
-            await self._define_all_view(table_name)
+            if update_all_view:
+                await self._define_all_view(table_name, session)
         return True
 
     async def _do_update(self, session, query: str) -> None:
@@ -316,33 +388,38 @@ class AsyncGenericBackend(BackendCore):
         session=None,
     ) -> bool:
         """Update records in table."""
+        if await self._is_audit_table(table_name, session=session):
+            raise OperationNotPermittedError("audit tables cannot be altered directly")
         sql = self.generator_class(f"{self._fqtn(table_name)}", uri_query, data=data)
-
-        if tsc is None:
-            tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
-
-        # Build audit trail
-        audit_data = []
-        async for val in self.table_select(table_name, uri_query, data=data):
-            audit_data.append(
-                tsc.event_update(diff=data, previous=val, query=uri_query)
-            )
-
-        if session:
+        async with self._session_scope(session) as session:
+            if tsc is None:
+                tsc = AuditTransaction(self.requestor, sql.message, self.requestor_name)
+            # Build audit trail on the same session as the write
+            audit_data = []
+            async for val in self.table_select(
+                table_name, uri_query, data=data, session=session
+            ):
+                audit_data.append(
+                    tsc.event_update(diff=data, previous=val, query=uri_query)
+                )
             await self._do_update(session, sql.update_query)
+            await self.table_create(audit_table(table_name), session)
             await self.table_insert(audit_table(table_name), audit_data, session)
-        else:
-            async with self._session_func()(self.engine) as session:
-                await self._do_update(session, sql.update_query)
-            await self.table_insert(audit_table(table_name), audit_data)
 
         return True
 
-    async def table_alter(self, table_name: str, uri_query: str) -> dict:
-        """Alter the name of a table, and its audit table (if it exists)."""
+    async def table_alter(self, table_name: str, uri_query: str, session=None) -> dict:
+        """
+        Alter the name of a table, and its audit table (if it exists).
+
+        If a session is passed, both alters run on that session so they
+        commit or roll back together. A savepoint isolates the audit table
+        alter, allowing a missing audit table to be tolerated without
+        aborting the surrounding transaction.
+        """
 
         # Protection: Cannot alter audit tables directly
-        if await self._is_audit_table(table_name):
+        if await self._is_audit_table(table_name, session=session):
             raise OperationNotPermittedError("audit tables cannot be altered directly")
 
         sql = self.generator_class(
@@ -350,27 +427,25 @@ class AsyncGenericBackend(BackendCore):
             uri_query,
             table_name_func=self._fqtn,
         )
-
-        async with self._session_func()(self.engine) as session:
-            await session.execute(sql.alter_query)
+        audit_table_name = audit_table(table_name)
+        audit_sql = self.generator_class(
+            f"{self._fqtn(audit_table_name)}",
+            uri_query,
+            table_name_func=self._fqtn,
+            audit=True,
+        )
 
         # Return structure matches sync version
         altered = {"tables": [table_name]}
 
-        # Try to alter audit table too
-        try:
-            audit_table_name = audit_table(table_name)
-            sql = self.generator_class(
-                f"{self._fqtn(audit_table_name)}",
-                uri_query,
-                table_name_func=self._fqtn,
-                audit=True,
-            )
-            async with self._session_func()(self.engine) as session:
-                await session.execute(sql.alter_query)
-            altered["tables"].append(audit_table_name)
-        except (psycopg.errors.UndefinedTable, aiosqlite.OperationalError):
-            pass  # Audit table doesn't exist, that's okay
+        async with self._session_scope(session) as session:
+            await session.execute(sql.alter_query)
+            await session.execute("SAVEPOINT pysquril_alter_audit")
+            try:
+                await session.execute(audit_sql.alter_query)
+                altered["tables"].append(audit_table_name)
+            except (psycopg.errors.UndefinedTable, aiosqlite.OperationalError):
+                await session.execute("ROLLBACK TO SAVEPOINT pysquril_alter_audit")
 
         return altered
 
@@ -418,9 +493,9 @@ class AsyncSqliteBackend(AsyncGenericBackend):
         schema = schema_name or self.schema
         return f'"{schema}{self.sep}{table_name}"'
 
-    async def _tables_in_schemas(self, table_name: str) -> list:
+    async def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """Return list of table instances across all schemas."""
-        async with async_sqlite_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(
                 f"""select name FROM sqlite_master where type = 'table'
                     and name like '{self.schema_pattern}%{table_name}'
@@ -428,6 +503,17 @@ class AsyncSqliteBackend(AsyncGenericBackend):
             )
             res = await session.fetchall()
         return [r[0] for r in res] if res else []
+
+    async def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via sqlite_master (never raises)."""
+        name = f"{self.schema}{self.sep}{table_name}"
+        async with self._session_scope(session) as session:
+            await session.execute(
+                "select 1 from sqlite_master where type = 'table' and name = ?",
+                (name,),
+            )
+            res = await session.fetchone()
+        return res is not None
 
     async def _create_all_view(
         self,
@@ -449,6 +535,7 @@ class AsyncSqliteBackend(AsyncGenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session=None,
     ) -> list:
         """List all tables in the database."""
         table_like_filter = ""
@@ -458,7 +545,7 @@ class AsyncSqliteBackend(AsyncGenericBackend):
 
         query = f"select name FROM sqlite_master where type = 'table' {table_like_filter} order by name asc"
 
-        async with async_sqlite_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(query)
             res = await session.fetchall()
 
@@ -513,38 +600,39 @@ class AsyncSqliteBackend(AsyncGenericBackend):
             data = [data] if isinstance(data, dict) else data
             table_name_fqtn = self._fqtn(table_name)
 
-            if session:
+            if session is not None:
                 # Session provided - caller handles exceptions
                 for entry in data:
                     await session.execute(
                         f"insert into {table_name_fqtn} values (json(?))",
                         (json.dumps(entry),),
                     )
+                if audit:
+                    await self._audit_insert(table_name, data, session)
             else:
                 # No session - handle table creation retry logic
                 try:
-                    async with async_sqlite_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (json(?))",
                                 (json.dumps(entry),),
                             )
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
                 except (aiosqlite.ProgrammingError, aiosqlite.OperationalError):
                     # Table doesn't exist - create and retry
-                    async with async_sqlite_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         await self.table_create(table_name, session)
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (json(?))",
                                 (json.dumps(entry),),
                             )
-                    if update_all_view:
-                        await self._define_all_view(table_name)
-
-            if audit:
-                tsc = AuditTransaction(self.requestor, "", self.requestor_name)
-                audit_data = [tsc.event_create(diff=entry) for entry in data]
-                await self.table_insert(audit_table(table_name), audit_data)
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
+                        if update_all_view:
+                            await self._define_all_view(table_name, session)
 
             return True
         except aiosqlite.IntegrityError:
@@ -560,13 +648,8 @@ class AsyncSqliteBackend(AsyncGenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    async def _yield_results(self, query: str) -> AsyncIterable[tuple]:
-        """Execute query and yield results."""
-        async with async_sqlite_session(self.engine) as session:
-            await session.execute(query)
-            async for row in session:
-                if row and row[0]:
-                    yield json.loads(row[0])
+    def _decode_row(self, row: Any) -> Any:
+        return json.loads(row[0])
 
     async def _do_update(self, session, query: str) -> None:
         """Execute update query (may contain multiple statements)."""
@@ -619,9 +702,9 @@ class AsyncPostgresBackend(AsyncGenericBackend):
         schema = '"all"' if schema == "all" else schema  # all is a reserved word
         return f'{schema}{self.sep}"{table_name}"'
 
-    async def _tables_in_schemas(self, table_name: str) -> list:
+    async def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """Return list of table instances across all schemas."""
-        async with async_postgres_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(
                 f"""select concat_ws('.', table_schema, concat('"', table_name, '"'))
                     from information_schema.tables where table_schema
@@ -630,6 +713,17 @@ class AsyncPostgresBackend(AsyncGenericBackend):
             )
             res = await session.fetchall()
         return [r[0] for r in res] if res else []
+
+    async def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists, via pg_tables (never raises)."""
+        async with self._session_scope(session) as session:
+            await session.execute(
+                "select exists(select 1 from pg_tables "
+                "where schemaname = %s and tablename = %s)",
+                (self.schema, table_name),
+            )
+            res = await session.fetchone()
+        return res[0]
 
     async def _create_all_view(
         self,
@@ -657,6 +751,7 @@ class AsyncPostgresBackend(AsyncGenericBackend):
         only_endswith: Optional[str] = None,
         remove_pattern: Optional[str] = None,
         table_like: Optional[str] = "",
+        session=None,
     ) -> list:
         """List all tables in the schema."""
         table_like_filter = ""
@@ -666,7 +761,7 @@ class AsyncPostgresBackend(AsyncGenericBackend):
         query = f"""select table_name from information_schema.tables
             where table_schema = '{self.schema}' {table_like_filter} order by table_name asc"""
 
-        async with async_postgres_session(self.engine) as session:
+        async with self._session_scope(session) as session:
             await session.execute(query)
             res = await session.fetchall()
 
@@ -728,38 +823,39 @@ class AsyncPostgresBackend(AsyncGenericBackend):
             data = [data] if isinstance(data, dict) else data
             table_name_fqtn = self._fqtn(table_name)
 
-            if session:
+            if session is not None:
                 # Session provided - caller handles exceptions
                 for entry in data:
                     await session.execute(
                         f"insert into {table_name_fqtn} values (%s::jsonb)",
                         (json.dumps(entry),),
                     )
+                if audit:
+                    await self._audit_insert(table_name, data, session)
             else:
                 # No session - handle table creation retry logic
                 try:
-                    async with async_postgres_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (%s::jsonb)",
                                 (json.dumps(entry),),
                             )
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
                 except (psycopg.errors.UndefinedTable, psycopg.errors.OperationalError):
                     # Table doesn't exist - create and retry
-                    async with async_postgres_session(self.engine) as session:
+                    async with self._session_scope() as session:
                         await self.table_create(table_name, session)
                         for entry in data:
                             await session.execute(
                                 f"insert into {table_name_fqtn} values (%s::jsonb)",
                                 (json.dumps(entry),),
                             )
-                    if update_all_view:
-                        await self._define_all_view(table_name)
-
-            if audit:
-                tsc = AuditTransaction(self.requestor, "", self.requestor_name)
-                audit_data = [tsc.event_create(diff=entry) for entry in data]
-                await self.table_insert(audit_table(table_name), audit_data)
+                        if audit:
+                            await self._audit_insert(table_name, data, session)
+                        if update_all_view:
+                            await self._define_all_view(table_name, session)
 
             return True
         except psycopg.errors.UniqueViolation:
@@ -775,13 +871,8 @@ class AsyncPostgresBackend(AsyncGenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    async def _yield_results(self, query: str) -> AsyncIterable[tuple]:
-        """Execute query and yield results."""
-        async with async_postgres_session(self.engine) as session:
-            await session.execute(query)
-            async for row in session:
-                if row and row[0]:
-                    yield row[0]
+    def _decode_row(self, row: Any) -> Any:
+        return row[0]
 
     async def _do_update(self, session, query: str) -> None:
         """Execute update query."""

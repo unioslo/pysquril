@@ -7,6 +7,7 @@ import uuid
 import tempfile
 
 from datetime import timedelta
+from unittest import mock
 from typing import Callable, Union
 from urllib.parse import quote
 
@@ -1217,6 +1218,406 @@ class TestSqlBackend(unittest.TestCase):
         all_backend = self.backend_class(self.engine, schema="all", schema_pattern="p")
         result = list(all_backend.table_select(table_name, ""))
         self.assertEqual(len(result), 3)
+
+    def test_session_read_after_write(self) -> None:
+        table = "session_read_write"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+            self.backend.table_create(audit_table(table), session)
+            self.backend.table_insert(
+                table_name=table, data={"id": 1, "x": "a"}, session=session
+            )
+            self.assertEqual(
+                list(self.backend.table_select(table, "", session=session)),
+                [{"id": 1, "x": "a"}],
+            )
+            self.backend.table_update(
+                table_name=table,
+                uri_query="set=x&where=id=eq.1",
+                data={"x": "b"},
+                session=session,
+            )
+            self.assertEqual(
+                list(self.backend.table_select(table, "", session=session)),
+                [{"id": 1, "x": "b"}],
+            )
+            self.backend.table_delete(
+                table_name=table, uri_query="where=id=eq.1", session=session
+            )
+            self.assertEqual(
+                list(self.backend.table_select(table, "", session=session)), []
+            )
+
+        # after commit the row is gone
+        self.assertEqual(list(self.backend.table_select(table, "")), [])
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_session_rollback(self) -> None:
+        table = "session_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+
+        try:
+            with self.session_func(self.engine) as session:
+                self.backend.table_insert(
+                    table_name=table, data={"id": 1}, session=session
+                )
+                self.assertEqual(
+                    list(self.backend.table_select(table, "", session=session)),
+                    [{"id": 1}],
+                )
+                raise RuntimeError("force rollback")
+        except RuntimeError:
+            pass
+
+        # the insert was rolled back
+        self.assertEqual(list(self.backend.table_select(table, "")), [])
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
+    def test_table_alter_with_session(self) -> None:
+        table = "session_alter"
+        renamed = "session_alter_renamed"
+        for t in (table, renamed):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+
+        with self.session_func(self.engine) as session:
+            out = self.backend.table_alter(
+                table_name=table,
+                uri_query=f"alter=name=eq.{renamed}",
+                session=session,
+            )
+        self.assertEqual(out["tables"], [table])
+        self.assertIn(renamed, self.backend.tables_list())
+        self.assertEqual(list(self.backend.table_select(renamed, "")), [])
+
+        self.backend.table_delete(table_name=renamed, uri_query="")
+
+    def test_table_restore_with_session(self) -> None:
+        table = "session_restore"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+        self.backend.table_update(
+            table_name=table,
+            uri_query="set=x&where=id=eq.1",
+            data={"x": "b"},
+        )
+        self.assertEqual(
+            list(self.backend.table_select(table, "")), [{"id": 1, "x": "b"}]
+        )
+
+        with self.session_func(self.engine) as session:
+            result = self.backend.table_restore(
+                table_name=table,
+                uri_query="restore&primary_key=id",
+                session=session,
+            )
+            self.assertTrue(result["updates"])
+            self.assertEqual(
+                list(self.backend.table_select(table, "", session=session)),
+                [{"id": 1, "x": "a"}],
+            )
+
+        # committed
+        self.assertEqual(
+            list(self.backend.table_select(table, "")), [{"id": 1, "x": "a"}]
+        )
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_audit_probe_does_not_abort_session(self) -> None:
+        """Probing a deleted audit source must not poison a caller session."""
+        table = "audit_probe_session"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        self.backend.table_insert(table_name=table, data={"id": 1})
+        # dropping the table removes the audit source but keeps the audit log
+        self.backend.table_delete(table_name=table, uri_query="")
+
+        with self.session_func(self.engine) as session:
+            # selecting the audit table probes the now-missing source table
+            list(self.backend.table_select(audit_table(table), "", session=session))
+            # the session must still be usable
+            session.execute("select 1")
+
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_audit_probe_does_not_commit_session(self) -> None:
+        """Probing an audit table must not commit the caller's transaction."""
+        table = "audit_probe_no_commit"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        # persist the tables so they survive the rollback below
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+            self.backend.table_create(audit_table(table), session)
+
+        try:
+            with self.session_func(self.engine) as session:
+                self.backend.table_insert(table, {"id": 1}, session=session)
+                # selecting the audit table runs the audit probes
+                list(self.backend.table_select(audit_table(table), "", session=session))
+                raise RuntimeError("force rollback")
+        except RuntimeError:
+            pass
+
+        # the uncommitted insert must not have been committed by the probe
+        self.assertEqual(list(self.backend.table_select(table, "")), [])
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_audit_probe_sees_uncommitted_audit_table(self) -> None:
+        """The audit-table guard reflects tables created in the same session."""
+        table = "audit_probe_uncommitted"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+            self.backend.table_insert(table, {"id": 1, "x": "a"}, session=session)
+            # creates and populates the audit table, still uncommitted
+            self.backend.table_update(
+                table_name=table,
+                uri_query="set=x&where=id=eq.1",
+                data={"x": "b"},
+                session=session,
+            )
+            with pytest.raises(OperationNotPermittedError):
+                self.backend.table_update(
+                    table_name=audit_table(table),
+                    uri_query="set=event&where=event=eq.update",
+                    data={"event": "tampered"},
+                    session=session,
+                )
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_audit_source_probe_uses_session(self) -> None:
+        """The audit-source probe sees uncommitted tables on the session."""
+        table = "audit_source_probe"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        # an unknown source table does not exist
+        self.assertFalse(self.backend._audit_source_exists(audit_table(table)))
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+            self.assertTrue(
+                self.backend._audit_source_exists(audit_table(table), session=session)
+            )
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
+    def test_select_audit_with_session(self) -> None:
+        """An audited read on a session creates the audit table if needed."""
+        table = "select_audit_session"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 1})
+
+        with self.session_func(self.engine) as session:
+            rows = list(
+                self.backend.table_select(
+                    table, "select=id", audit=True, session=session
+                )
+            )
+            self.assertEqual(rows, [[1]])
+
+        audit = list(self.backend.table_select(audit_table(table), ""))
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["event"], "read")
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_update_audit_table_not_permitted(self) -> None:
+        table = "update_audit_guard"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+        # the update creates the audit table
+        self.backend.table_update(
+            table_name=table,
+            uri_query="set=x&where=id=eq.1",
+            data={"x": "b"},
+        )
+
+        # audit tables cannot be updated directly
+        with pytest.raises(OperationNotPermittedError):
+            self.backend.table_update(
+                table_name=audit_table(table),
+                uri_query="set=event&where=event=eq.update",
+                data={"event": "tampered"},
+            )
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_wildcard_select_with_session(self) -> None:
+        """A wildcard select on a session sees tables created in that session."""
+        prefix = "wildcard_session_"
+        table = f"{prefix}a"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+
+        with self.session_func(self.engine) as session:
+            self.backend.table_create(table, session)
+            self.backend.table_insert(table, {"id": 1}, session=session)
+            rows = list(
+                self.backend.table_select(f"{prefix}*", "select=id", session=session)
+            )
+            self.assertEqual(len(rows), 1)
+            self.assertIn(table, rows[0])
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
+    def test_update_audit_shares_session(self) -> None:
+        """The audit insert runs on the same session as the update."""
+        table = "update_audit_session"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+
+        seen = {}
+        orig_do_update = self.backend._do_update
+        orig_insert = self.backend.table_insert
+
+        def spy_do_update(session, query):
+            seen["update"] = session
+            return orig_do_update(session, query)
+
+        def spy_insert(table_name, data, session=None, *args, **kwargs):
+            if table_name == audit_table(table):
+                seen["audit"] = session
+            return orig_insert(table_name, data, session, *args, **kwargs)
+
+        with (
+            mock.patch.object(self.backend, "_do_update", new=spy_do_update),
+            mock.patch.object(self.backend, "table_insert", new=spy_insert),
+        ):
+            self.backend.table_update(
+                table_name=table,
+                uri_query="set=x&where=id=eq.1",
+                data={"x": "b"},
+            )
+
+        self.assertIsNotNone(seen.get("update"))
+        self.assertIs(seen.get("audit"), seen.get("update"))
+
+        self.backend.table_delete(table_name=table, uri_query="")
+        self.backend.table_delete(table_name=audit_table(table), uri_query="")
+
+    def test_update_audit_rollback(self) -> None:
+        """A failed audit insert rolls the update back (one transaction)."""
+        if not isinstance(self.backend, PostgresBackend):
+            pytest.skip("SQLite _do_update uses executescript (implicit commit)")
+
+        table = "update_audit_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 1, "x": "a"})
+
+        orig_insert = self.backend.table_insert
+
+        def boom(table_name, data, session=None, *args, **kwargs):
+            if table_name == audit_table(table):
+                raise RuntimeError("audit insert failed")
+            return orig_insert(table_name, data, session, *args, **kwargs)
+
+        with mock.patch.object(self.backend, "table_insert", new=boom):
+            with pytest.raises(RuntimeError):
+                self.backend.table_update(
+                    table_name=table,
+                    uri_query="set=x&where=id=eq.1",
+                    data={"x": "b"},
+                )
+
+        # the update was rolled back together with the failed audit insert
+        self.assertEqual(
+            list(self.backend.table_select(table, "")), [{"id": 1, "x": "a"}]
+        )
+
+        self.backend.table_delete(table_name=table, uri_query="")
+
+    def test_insert_audit_rollback(self) -> None:
+        """A failed audit insert rolls the insert back (one transaction)."""
+        table = "insert_audit_rollback"
+        for t in (table, audit_table(table)):
+            try:
+                self.backend.table_delete(table_name=t, uri_query="")
+            except Exception:
+                pass
+        self.backend.table_insert(table_name=table, data={"id": 0})
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("audit insert failed")
+
+        with mock.patch.object(self.backend, "_audit_insert", new=boom):
+            with pytest.raises(RuntimeError):
+                self.backend.table_insert(table_name=table, data={"id": 1}, audit=True)
+
+        # the row insert was rolled back together with the failed audit insert
+        self.assertEqual(list(self.backend.table_select(table, "")), [{"id": 0}])
+
+        self.backend.table_delete(table_name=table, uri_query="")
 
 
 class TestSqliteBackend(TestSqlBackend):

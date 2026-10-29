@@ -100,6 +100,43 @@ result = list(
 assert result[0][0] == "good"
 ```
 
+## Passing a session
+
+Every method that touches the database accepts an optional `session`.
+Passing one pins the operation to that session, so related calls run on
+the same connection and (unless you commit early) the same transaction.
+That gives you two things:
+
+- **Read your own writes**: a read on the session sees writes made
+  earlier in the same session, including uncommitted ones.
+- **Atomicity**: the calls commit or roll back together.
+
+This matters when reads and writes use different pool connections (for
+example separate read and write pools): pinning both to one session
+keeps them consistent.
+
+```python
+from pysquril import SqliteBackend, sqlite_init, sqlite_session
+
+engine = sqlite_init(":memory:")
+backend = SqliteBackend(engine)
+
+table = "mytable"
+with sqlite_session(engine) as session:
+    backend.table_create(table, session)
+    backend.table_insert(table, {"id": 0, "saying": "good"}, session=session)
+
+    # reads its own uncommitted write on the same session
+    assert list(backend.table_select(table, "", session=session)) == [
+        {"id": 0, "saying": "good"}
+    ]
+# committed when the session closes
+```
+
+`table_select` yields lazily, so consume the returned iterable before the
+session is closed. For PostgreSQL use `postgres_session`. `table_restore`
+and `table_alter` also accept a session and run atomically when given one.
+
 ## Tests
 
 ```bash

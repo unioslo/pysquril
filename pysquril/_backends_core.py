@@ -136,7 +136,7 @@ class DatabaseBackend(ABC):
         pass
 
     @abstractmethod
-    def tables_list(self) -> list:
+    def tables_list(self, session=None) -> list:
         pass
 
     @abstractmethod
@@ -153,6 +153,7 @@ class DatabaseBackend(ABC):
         table_name: str,
         data: Union[dict, list],
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+        update_all_view: bool = False,
         audit: bool = False,
     ) -> bool:
         pass
@@ -173,6 +174,7 @@ class DatabaseBackend(ABC):
         self,
         table_name: str,
         uri_query: str,
+        update_all_view: bool = False,
         audit: bool = True,
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> bool:
@@ -184,16 +186,28 @@ class DatabaseBackend(ABC):
         table_name: str,
         uri_query: str,
         data: Optional[Union[dict, list]] = None,
+        exclude_endswith: list = [],
         audit: bool = False,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> Iterable[tuple]:
         pass
 
     @abstractmethod
-    def table_restore(self, table_name: str, uri_query: str) -> bool:
+    def table_restore(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         pass
 
     @abstractmethod
-    def table_alter(self, table_name: str, uri_query: str) -> dict:
+    def table_alter(
+        self,
+        table_name: str,
+        uri_query: str,
+        session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
+    ) -> dict:
         pass
 
 
@@ -217,13 +231,41 @@ class BackendCore(DatabaseBackend):
         raise NotImplementedError
 
     @abstractmethod
+    def _session_scope(self, session=None):
+        """
+        Yield the caller's session, or open (and commit/rollback) a fresh one.
+
+        Implemented by the sync and async backend bases, since the context
+        manager protocol differs between the two.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def _yield_results(self, query: str) -> Iterable[tuple]:
         """Execute query and yield results. Implemented by sync/async subclasses."""
         raise NotImplementedError
 
     @abstractmethod
-    def _tables_in_schemas(self, table_name: str) -> list:
+    def _decode_row(self, row: Any) -> Any:
+        """Decode a single raw database row into the stored document.
+
+        Backend-specific: SQLite stores JSON as text and needs decoding,
+        PostgreSQL returns jsonb already decoded.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _tables_in_schemas(self, table_name: str, session=None) -> list:
         """Return list of table instances across schemas. Backend-specific."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _table_exists(self, table_name: str, session=None) -> bool:
+        """Return whether a table exists.
+
+        Implemented with a non-raising catalog lookup, so it is safe to run on
+        a caller-supplied session. Backend-specific.
+        """
         raise NotImplementedError
 
     @abstractmethod
