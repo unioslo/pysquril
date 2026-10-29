@@ -320,6 +320,14 @@ class GenericBackend(BackendCore):
         query: str,
         session: Optional[Union[sqlite3.Cursor, psycopg2.extensions.cursor]] = None,
     ) -> Iterable[tuple]:
+        with ExitStack() as stack:
+            if session is None:
+                session = stack.enter_context(self._session_func()(self.engine))
+            session.execute(query)
+            for row in session:
+                yield self._decode_row(row)
+
+    def _decode_row(self, row: Any) -> Any:
         raise NotImplementedError
 
     def _is_audit_table(self, table_name: str) -> bool:
@@ -750,16 +758,8 @@ class SqliteBackend(GenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(
-        self,
-        query: str,
-        session: Optional[sqlite3.Cursor] = None,
-    ) -> Iterable[tuple]:
-        with ExitStack() as stack:
-            if session is None:
-                session = stack.enter_context(self._session_func()(self.engine))
-            for row in session.execute(query):
-                yield json.loads(row[0])
+    def _decode_row(self, row: Any) -> Any:
+        return json.loads(row[0])
 
     def _do_update(self, session: sqlite3.Cursor, query: str) -> None:
         session.executescript(query)
@@ -955,17 +955,8 @@ class PostgresBackend(GenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    def _yield_results(
-        self,
-        query: str,
-        session: Optional[psycopg2.extensions.cursor] = None,
-    ) -> Iterable[tuple]:
-        with ExitStack() as stack:
-            if session is None:
-                session = stack.enter_context(self._session_func()(self.engine))
-            session.execute(query)
-            for row in session:
-                yield row[0]
+    def _decode_row(self, row: Any) -> Any:
+        return row[0]
 
     def _do_update(self, session: psycopg2.extensions.cursor, query: str) -> None:
         session.execute(query)

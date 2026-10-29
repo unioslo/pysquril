@@ -21,7 +21,7 @@ import uuid
 
 from collections.abc import AsyncIterable
 from contextlib import AsyncExitStack
-from typing import Optional, Callable, Union
+from typing import Any, Optional, Callable, Union
 
 from pysquril._backends_core import BackendCore, AuditTransaction
 from pysquril._connection import async_sqlite_session, async_postgres_session
@@ -219,6 +219,17 @@ class AsyncGenericBackend(BackendCore):
 
     async def _yield_results(self, query: str, session=None) -> AsyncIterable[tuple]:
         """Execute query and yield results asynchronously."""
+        async with AsyncExitStack() as stack:
+            if session is None:
+                session = await stack.enter_async_context(
+                    self._session_func()(self.engine)
+                )
+            await session.execute(query)
+            async for row in session:
+                if row and row[0]:
+                    yield self._decode_row(row)
+
+    def _decode_row(self, row: Any) -> Any:
         raise NotImplementedError
 
     async def _is_audit_table(self, table_name: str) -> bool:
@@ -627,17 +638,8 @@ class AsyncSqliteBackend(AsyncGenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    async def _yield_results(self, query: str, session=None) -> AsyncIterable[tuple]:
-        """Execute query and yield results."""
-        async with AsyncExitStack() as stack:
-            if session is None:
-                session = await stack.enter_async_context(
-                    self._session_func()(self.engine)
-                )
-            await session.execute(query)
-            async for row in session:
-                if row and row[0]:
-                    yield json.loads(row[0])
+    def _decode_row(self, row: Any) -> Any:
+        return json.loads(row[0])
 
     async def _do_update(self, session, query: str) -> None:
         """Execute update query (may contain multiple statements)."""
@@ -849,17 +851,8 @@ class AsyncPostgresBackend(AsyncGenericBackend):
             logging.error("Not sure what went wrong")
             raise e
 
-    async def _yield_results(self, query: str, session=None) -> AsyncIterable[tuple]:
-        """Execute query and yield results."""
-        async with AsyncExitStack() as stack:
-            if session is None:
-                session = await stack.enter_async_context(
-                    self._session_func()(self.engine)
-                )
-            await session.execute(query)
-            async for row in session:
-                if row and row[0]:
-                    yield row[0]
+    def _decode_row(self, row: Any) -> Any:
+        return row[0]
 
     async def _do_update(self, session, query: str) -> None:
         """Execute update query."""

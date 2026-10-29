@@ -234,6 +234,15 @@ class BackendCore(DatabaseBackend):
         raise NotImplementedError
 
     @abstractmethod
+    def _decode_row(self, row: Any) -> Any:
+        """Decode a single raw database row into the stored document.
+
+        Backend-specific: SQLite stores JSON as text and needs decoding,
+        PostgreSQL returns jsonb already decoded.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def _tables_in_schemas(self, table_name: str) -> list:
         """Return list of table instances across schemas. Backend-specific."""
         raise NotImplementedError
