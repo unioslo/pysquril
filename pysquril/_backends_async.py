@@ -91,11 +91,9 @@ class AsyncGenericBackend(BackendCore):
         if "order" in query_parts:
             uri_query = uri_query.split("&order")[0]
         uri_query = f"{uri_query}&order=timestamp.asc"
-        target_data = []
-        async for row in self.table_select(
+        target_data = await self._select_all(
             audit_table(table_name), uri_query, session=session
-        ):
-            target_data.append(row)
+        )
 
         if not target_data:
             return work_done
@@ -144,13 +142,11 @@ class AsyncGenericBackend(BackendCore):
             ]:
                 continue
             target_entry = entry.get("previous")
-            result = []
-            async for row in self.table_select(
+            result = await self._select_all(
                 table_name,
                 f"where={primary_key}=eq.{pk_value}",
                 session=session,
-            ):
-                result.append(row)
+            )
 
             if len(result) > 1:
                 raise DataIntegrityError(f"primary_key: {primary_key} is not unique")
@@ -229,6 +225,10 @@ class AsyncGenericBackend(BackendCore):
 
     def _decode_row(self, row: Any) -> Any:
         raise NotImplementedError
+
+    async def _select_all(self, table_name: str, uri_query: str, **kwargs) -> list:
+        """Collect a table_select async iterator into a list."""
+        return [row async for row in self.table_select(table_name, uri_query, **kwargs)]
 
     async def _is_audit_table(self, table_name: str) -> bool:
         """
